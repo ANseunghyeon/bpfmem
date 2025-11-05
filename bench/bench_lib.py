@@ -275,13 +275,25 @@ def set_sysctl(key: str, value: Union[int, str]):
 def disable_swap():
     run(["sudo", "swapoff", "-a"])
 
+def configure_smt(option: str):
+    try:
+        run([
+            "sudo", "sh", "-c",
+            f"echo {option} > /sys/devices/system/cpu/smt/control"
+        ])
+
+    except subprocess.CalledProcessError:
+        log.warning(
+            "Failed to set SMT to {} - this system may "
+            "not support SMT control. Ignoring it.".format(option)
+        )
 
 def disable_smt():
-    run(["sudo", "sh", "-c", "echo off > /sys/devices/system/cpu/smt/control"])
+    configure_smt("off")
 
 
 def enable_smt():
-    run(["sudo", "sh", "-c", "echo on > /sys/devices/system/cpu/smt/control"])
+    configure_smt("on")
 
 
 def rsync_folder(source_dir: str, dest_dir: str):
