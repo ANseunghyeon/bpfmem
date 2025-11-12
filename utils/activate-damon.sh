@@ -29,6 +29,10 @@ damon_reclaim_show_parameters(){
 
 damon_reclaim_enable(){
     damon_reclaim_set 1 enabled
+    damon_reclaim_set 0 monitor_region_start
+    damon_reclaim_set $((1024*1024*1024*60)) monitor_region_end
+    damon_reclaim_set $((1024*1024*1024)) quota_sz
+    damon_reclaim_set 50 quota_ms
 }
 
 damon_reclaim_disable(){
@@ -42,25 +46,25 @@ damon_reclaim_commit(){
 # Profile: Normal
 damon_reclaim_set_c1() {
     damon_reclaim_set 120000000 min_age
-    damon_reclaim_set 500 wmarks_high
-    damon_reclaim_set 400 wmarks_mid
-    damon_reclaim_set 200 wmarks_low
+    damon_reclaim_set 999 wmarks_high
+    damon_reclaim_set 995 wmarks_mid
+    damon_reclaim_set 1 wmarks_low
 }
 
 # Profile: Plus Aggressive
 damon_reclaim_set_c2() {
     damon_reclaim_set 10000000 min_age
-    damon_reclaim_set 800 wmarks_high
-    damon_reclaim_set 700 wmarks_mid
-    damon_reclaim_set 200 wmarks_low
+    damon_reclaim_set 999 wmarks_high
+    damon_reclaim_set 995 wmarks_mid
+    damon_reclaim_set 1 wmarks_low
 }
 
 # Profile: Very Aggressive
 damon_reclaim_set_c3() {
     damon_reclaim_set 1000000 min_age
     damon_reclaim_set 999 wmarks_high
-    damon_reclaim_set 950 wmarks_mid
-    damon_reclaim_set 50 wmarks_low
+    damon_reclaim_set 995 wmarks_mid
+    damon_reclaim_set 1 wmarks_low
 }
 
 damon_reclaim_set_config(){
