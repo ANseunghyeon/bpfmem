@@ -14,6 +14,7 @@ from typing import Dict, List, Union
 
 from ruamel.yaml import YAML
 
+MiB = 2**20
 GiB = 2**30
 log = logging.getLogger(__name__)
 
