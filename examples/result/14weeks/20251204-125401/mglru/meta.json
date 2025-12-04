@@ -1,0 +1,12 @@
+{
+    "variant": "mglru",
+    "run_stamp": "20251204-125401",
+    "start_ns": 1764820804047881230,
+    "end_ns": 1764820896270386848,
+    "makespan_sec": 92.222352059,
+    "file_size_mb": 256,
+    "working_set_mb": 64,
+    "cgroup_memory_mb": 128,
+    "phase_iterations": 3,
+    "exit_code": 0
+}

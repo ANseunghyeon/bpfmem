@@ -5,6 +5,9 @@ BPFTOOL ?= /usr/local/sbin/bpftool #../../tools/bpf/bpftool/bpftool
 CFLAGS = -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -c -g -Wall
 USERSPACE_CFLAGS = -O2 -fsanitize=address -g -Wall
 USERSPACE_LINKER_FLAGS = -L/usr/local/lib64 -lbpf
+CC ?= gcc
+LIB_CFLAGS = -O2 -g -Wall -Wextra
+POLICIES_ABS := $(abspath .)
 
 # Define the BPF program source and the output object file
 BPF_SRC = cache_ext_simple.bpf.c cache_ext_mru.bpf.c cache_ext_mglru.bpf.c
@@ -35,7 +38,7 @@ CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 
 all: 	cache_ext_mru.out cache_ext_mglru.out cache_ext_fifo.out \
 		cache_ext_sampling.out cache_ext_get_scan.out cache_ext_s3fifo.out \
-		cache_ext_lhd.out   \
+		cache_ext_lhd.out libcacheext.a  \
 		# cache_ext_debug.out cache_ext_simple.out
 
 $(VMLINUX_H):
@@ -52,7 +55,16 @@ $(VMLINUX_H):
 %.out: %.c %.skel.h
 	$(CLANG) $(USERSPACE_CFLAGS) $< -o $@ $(USERSPACE_LINKER_FLAGS)
 
+cacheext_threaded.o: cacheext_threaded.c cacheext_api.h dir_watcher.h \
+	cache_ext_fifo.skel.h cache_ext_mru.skel.h cache_ext_mglru.skel.h \
+	cache_ext_lhd.skel.h cache_ext_lhd.bpf.h cache_ext_s3fifo.skel.h \
+	cache_ext_sampling.skel.h cache_ext_get_scan.skel.h
+	$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+libcacheext.a: cacheext_threaded.o
+	ar rcs $@ $^
+
 clean:
-	rm -f *.o *.out *.skel.h $(VMLINUX_H)
+	rm -f *.o *.out *.skel.h $(VMLINUX_H) libcacheext.a
 
 .PHONY: all clean

@@ -1,0 +1,31 @@
+[INFO] Creating data file: /tmp/14weeks_data/workload_data.bin (256 MB)
+
+[INFO] Starting multi-phase workload
+[INFO] File size: 256 MB, Working set: 64 MB, Iterations: 3
+[INFO] Latency measurement: ON
+
+[PHASE] MRU-favorable (LIFO stack access) (iteration 1/5) starting...
+
+[PHASE] LRU-favorable (working set) (iteration 2/5) starting...
+
+[PHASE] FIFO-favorable (sequential scan) (iteration 3/5) starting...
+
+[PHASE] S3FIFO-favorable (seq + re-access) (iteration 4/5) starting...
+
+[PHASE] RANDOM (uniform random) (iteration 5/5) starting...
+
+==================== WORKLOAD SUMMARY ====================
+Phase         Duration(s)        Accesses  Avg Lat(us)   Throughput
+------------------------------------------------------------
+MRU                56.848          196608       288.93         3458
+LRU                 0.133          491520         0.25      3708151
+FIFO               10.293          196608        52.27        19102
+S3FIFO             14.098          255816        55.00        18145
+RANDOM             10.260          196608        52.07        19163
+------------------------------------------------------------
+TOTAL              91.632         1337160
+============================================================
+
+[INFO] Results written to: /home/an/Desktop/damon_cache_ext/examples/result/14weeks/20251204-125401/mru/phase_results.csv
+[INFO] Summary written to: /home/an/Desktop/damon_cache_ext/examples/result/14weeks/20251204-125401/mru/summary.json
+[DONE] Multi-phase workload completed.

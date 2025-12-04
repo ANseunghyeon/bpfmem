@@ -1,0 +1,12 @@
+{
+    "variant": "s3fifo",
+    "run_stamp": "20251204-125401",
+    "start_ns": 1764820689408525934,
+    "end_ns": 1764820781719775209,
+    "makespan_sec": 92.311306381,
+    "file_size_mb": 256,
+    "working_set_mb": 64,
+    "cgroup_memory_mb": 128,
+    "phase_iterations": 3,
+    "exit_code": 0
+}

@@ -9,7 +9,12 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-// Generic
+#ifndef PG_hugetlb
+#ifdef PGTY_hugetlb
+#define PG_hugetlb PGTY_hugetlb
+#endif
+#endif
+
 
 #define BPF_STRUCT_OPS(name, args...) \
 	SEC("struct_ops/" #name)      \

@@ -1,0 +1,38 @@
+{
+  "total_duration_sec": 91.631868,
+  "file_size_mb": 256,
+  "working_set_mb": 64,
+  "iterations_per_phase": 3,
+  "phases": [
+    {
+      "name": "MRU",
+      "duration_sec": 56.848079,
+      "accesses": 196608,
+      "throughput": 3458.48
+    },
+    {
+      "name": "LRU",
+      "duration_sec": 0.132551,
+      "accesses": 491520,
+      "throughput": 3708151.01
+    },
+    {
+      "name": "FIFO",
+      "duration_sec": 10.292663,
+      "accesses": 196608,
+      "throughput": 19101.76
+    },
+    {
+      "name": "S3FIFO",
+      "duration_sec": 14.098457,
+      "accesses": 255816,
+      "throughput": 18144.96
+    },
+    {
+      "name": "RANDOM",
+      "duration_sec": 10.259761,
+      "accesses": 196608,
+      "throughput": 19163.02
+    }
+  ]
+}

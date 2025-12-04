@@ -1,0 +1,12 @@
+{
+    "variant": "mru",
+    "run_stamp": "20251204-125401",
+    "start_ns": 1764820456212940377,
+    "end_ns": 1764820552408046074,
+    "makespan_sec": 96.195216972,
+    "file_size_mb": 256,
+    "working_set_mb": 64,
+    "cgroup_memory_mb": 128,
+    "phase_iterations": 3,
+    "exit_code": 0
+}

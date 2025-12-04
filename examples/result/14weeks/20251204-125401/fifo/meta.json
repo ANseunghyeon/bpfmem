@@ -1,0 +1,12 @@
+{
+    "variant": "fifo",
+    "run_stamp": "20251204-125401",
+    "start_ns": 1764820574757438146,
+    "end_ns": 1764820667056281862,
+    "makespan_sec": 92.298320796,
+    "file_size_mb": 256,
+    "working_set_mb": 64,
+    "cgroup_memory_mb": 128,
+    "phase_iterations": 3,
+    "exit_code": 0
+}

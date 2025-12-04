@@ -1,0 +1,311 @@
+
+============================================
+Dynamic Policy Controller Started
+============================================
+Cgroup:      /sys/fs/cgroup/cache_ext_14w
+Watch dir:   /tmp/14weeks_data
+Cgroup size: 128 MB
+Min switch:  2000 ms
+Window:      500 ms
+Dry run:     NO
+Output:      /home/an/Desktop/damon_cache_ext/examples/result/14weeks/20251204-125401/dynamic/controller
+============================================
+
+Press Ctrl+C to stop.
+
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+
+[SWITCH] s3fifo -> mru (detected pattern: MRU)
+         Reason: seq=50.0% reaccess=50.0% events=3450
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.49 reaccess=0.51 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.45 reaccess=0.55 recent_re=0.85 ws_hit=0.90
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.41 reaccess=0.59 recent_re=0.73 ws_hit=0.77
+[DETECT] seq=0.38 reaccess=0.62 recent_re=0.64 ws_hit=0.68
+[DETECT] seq=0.36 reaccess=0.64 recent_re=0.58 ws_hit=0.61
+[DETECT] seq=0.33 reaccess=0.67 recent_re=0.52 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.31 reaccess=0.63 recent_re=0.52 ws_hit=0.55
+[DETECT] seq=0.29 reaccess=0.59 recent_re=0.52 ws_hit=0.55
+[DETECT] seq=0.28 reaccess=0.56 recent_re=0.52 ws_hit=0.55
+[DETECT] seq=0.26 reaccess=0.53 recent_re=0.52 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.26 reaccess=0.52 recent_re=0.54 ws_hit=0.57
+[DETECT] seq=0.27 reaccess=0.54 recent_re=0.53 ws_hit=0.61
+[DETECT] seq=0.28 reaccess=0.56 recent_re=0.53 ws_hit=0.61
+[DETECT] seq=0.29 reaccess=0.58 recent_re=0.53 ws_hit=0.61
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.30 reaccess=0.60 recent_re=0.53 ws_hit=0.60
+[DETECT] seq=0.31 reaccess=0.61 recent_re=0.53 ws_hit=0.59
+[DETECT] seq=0.31 reaccess=0.63 recent_re=0.52 ws_hit=0.59
+[DETECT] seq=0.32 reaccess=0.64 recent_re=0.52 ws_hit=0.58
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.33 reaccess=0.66 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.33 reaccess=0.67 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.34 reaccess=0.68 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.35 reaccess=0.69 recent_re=0.52 ws_hit=0.57
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.35 reaccess=0.70 recent_re=0.52 ws_hit=0.56
+[DETECT] seq=0.36 reaccess=0.71 recent_re=0.52 ws_hit=0.56
+[DETECT] seq=0.36 reaccess=0.72 recent_re=0.52 ws_hit=0.56
+[DETECT] seq=0.37 reaccess=0.73 recent_re=0.51 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.37 reaccess=0.74 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.37 reaccess=0.75 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.37 reaccess=0.76 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.36 reaccess=0.76 recent_re=0.49 ws_hit=0.55
+
+[SWITCH] mru -> s3fifo (detected pattern: S3FIFO)
+         Reason: seq=36.0% reaccess=76.3% events=69115
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.01 reaccess=0.02 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.07 reaccess=0.14 recent_re=0.66 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.12 reaccess=0.24 recent_re=0.58 ws_hit=0.81
+
+[SWITCH] s3fifo -> mru (detected pattern: MRU)
+         Reason: seq=11.9% reaccess=23.8% events=17043
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.48 reaccess=0.52 recent_re=0.94 ws_hit=1.00
+[DETECT] seq=0.45 reaccess=0.55 recent_re=0.84 ws_hit=0.90
+[DETECT] seq=0.42 reaccess=0.58 recent_re=0.75 ws_hit=0.81
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.40 reaccess=0.60 recent_re=0.69 ws_hit=0.74
+[DETECT] seq=0.38 reaccess=0.62 recent_re=0.63 ws_hit=0.68
+[DETECT] seq=0.36 reaccess=0.64 recent_re=0.58 ws_hit=0.62
+[DETECT] seq=0.34 reaccess=0.66 recent_re=0.54 ws_hit=0.57
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.33 reaccess=0.66 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.32 reaccess=0.63 recent_re=0.52 ws_hit=0.55
+[DETECT] seq=0.32 reaccess=0.65 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.33 reaccess=0.66 recent_re=0.52 ws_hit=0.59
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.34 reaccess=0.68 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.34 reaccess=0.69 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.35 reaccess=0.70 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.35 reaccess=0.71 recent_re=0.52 ws_hit=0.57
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.36 reaccess=0.72 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.36 reaccess=0.73 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.37 reaccess=0.74 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.37 reaccess=0.74 recent_re=0.51 ws_hit=0.56
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.38 reaccess=0.75 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.38 reaccess=0.76 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.38 reaccess=0.77 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.77 recent_re=0.51 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.39 reaccess=0.78 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.78 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.79 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.38 reaccess=0.79 recent_re=0.49 ws_hit=0.55
+
+[SWITCH] mru -> s3fifo (detected pattern: S3FIFO)
+         Reason: seq=38.1% reaccess=79.5% events=79778
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.01 reaccess=0.01 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.07 reaccess=0.14 recent_re=0.66 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.12 reaccess=0.23 recent_re=0.58 ws_hit=0.81
+
+[SWITCH] s3fifo -> mru (detected pattern: MRU)
+         Reason: seq=11.7% reaccess=23.5% events=17333
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.50 reaccess=0.50 recent_re=1.00 ws_hit=1.00
+[DETECT] seq=0.48 reaccess=0.52 recent_re=0.96 ws_hit=1.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.45 reaccess=0.55 recent_re=0.85 ws_hit=0.90
+[DETECT] seq=0.43 reaccess=0.57 recent_re=0.76 ws_hit=0.81
+[DETECT] seq=0.40 reaccess=0.60 recent_re=0.69 ws_hit=0.74
+[DETECT] seq=0.38 reaccess=0.62 recent_re=0.63 ws_hit=0.67
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.36 reaccess=0.64 recent_re=0.58 ws_hit=0.62
+[DETECT] seq=0.34 reaccess=0.66 recent_re=0.54 ws_hit=0.57
+[DETECT] seq=0.33 reaccess=0.66 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.32 reaccess=0.63 recent_re=0.52 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.32 reaccess=0.65 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.33 reaccess=0.66 recent_re=0.52 ws_hit=0.59
+[DETECT] seq=0.34 reaccess=0.67 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.34 reaccess=0.69 recent_re=0.52 ws_hit=0.58
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.35 reaccess=0.69 recent_re=0.52 ws_hit=0.58
+[DETECT] seq=0.35 reaccess=0.70 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.36 reaccess=0.71 recent_re=0.52 ws_hit=0.57
+[DETECT] seq=0.36 reaccess=0.72 recent_re=0.52 ws_hit=0.57
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.37 reaccess=0.73 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.37 reaccess=0.74 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.37 reaccess=0.75 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.38 reaccess=0.75 recent_re=0.51 ws_hit=0.56
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.38 reaccess=0.76 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.38 reaccess=0.76 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.38 reaccess=0.77 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.78 recent_re=0.51 ws_hit=0.55
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.39 reaccess=0.78 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.79 recent_re=0.51 ws_hit=0.55
+[DETECT] seq=0.39 reaccess=0.79 recent_re=0.51 ws_hit=0.56
+[DETECT] seq=0.38 reaccess=0.80 recent_re=0.49 ws_hit=0.54
+
+[SWITCH] mru -> s3fifo (detected pattern: S3FIFO)
+         Reason: seq=37.8% reaccess=79.6% events=80404
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.00 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.37 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.74 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.85 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.90 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.92 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.93 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.00 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.00 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.01 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.01 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.01 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.02 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.02 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.03 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.03 reaccess=0.94 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.07 reaccess=0.93 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.08 reaccess=0.92 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.09 reaccess=0.91 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.10 reaccess=0.90 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.11 reaccess=0.89 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.11 reaccess=0.89 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.12 reaccess=0.88 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.13 reaccess=0.87 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.14 reaccess=0.86 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.14 reaccess=0.86 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.15 reaccess=0.85 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.18 reaccess=0.85 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.18 reaccess=0.84 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.19 reaccess=0.83 recent_re=0.00 ws_hit=0.00
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.22 reaccess=0.84 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.24 reaccess=0.83 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.24 reaccess=0.83 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.25 reaccess=0.82 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.25 reaccess=0.82 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.26 reaccess=0.81 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.26 reaccess=0.80 recent_re=0.00 ws_hit=0.00
+[DETECT] seq=0.27 reaccess=0.80 recent_re=0.00 ws_hit=0.01
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.27 reaccess=0.79 recent_re=0.00 ws_hit=0.01
+[DETECT] seq=0.27 reaccess=0.79 recent_re=0.00 ws_hit=0.01
+[DETECT] seq=0.27 reaccess=0.79 recent_re=0.00 ws_hit=0.01
+[DETECT] seq=0.28 reaccess=0.79 recent_re=0.00 ws_hit=0.02
+[DETECT] seq=0.28 reaccess=0.78 recent_re=0.00 ws_hit=0.02
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.03
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.29 reaccess=0.77 recent_re=0.01 ws_hit=0.04
+[DETECT] seq=0.30 reaccess=0.78 recent_re=0.01 ws_hit=0.04
+[DETECT] seq=0.30 reaccess=0.77 recent_re=0.01 ws_hit=0.05
+[DETECT] seq=0.31 reaccess=0.77 recent_re=0.01 ws_hit=0.05
+[DETECT] seq=0.31 reaccess=0.76 recent_re=0.01 ws_hit=0.05
+[DETECT] seq=0.31 reaccess=0.76 recent_re=0.01 ws_hit=0.05
+[DETECT] seq=0.31 reaccess=0.75 recent_re=0.01 ws_hit=0.06
+[DETECT] seq=0.31 reaccess=0.75 recent_re=0.01 ws_hit=0.06
+[DETECT] seq=0.32 reaccess=0.75 recent_re=0.01 ws_hit=0.06
+[DETECT] seq=0.32 reaccess=0.74 recent_re=0.01 ws_hit=0.06
+[DETECT] seq=0.32 reaccess=0.74 recent_re=0.01 ws_hit=0.07
+[DETECT] seq=0.33 reaccess=0.74 recent_re=0.01 ws_hit=0.07
+[DETECT] seq=0.32 reaccess=0.74 recent_re=0.01 ws_hit=0.09
+[DETECT] seq=0.32 reaccess=0.73 recent_re=0.01 ws_hit=0.10
+[DETECT] seq=0.31 reaccess=0.73 recent_re=0.01 ws_hit=0.11
+[DETECT] seq=0.31 reaccess=0.73 recent_re=0.01 ws_hit=0.11
+[DETECT] seq=0.30 reaccess=0.73 recent_re=0.01 ws_hit=0.12
+[DETECT] seq=0.30 reaccess=0.73 recent_re=0.01 ws_hit=0.13
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.29 reaccess=0.73 recent_re=0.02 ws_hit=0.14
+[DETECT] seq=0.29 reaccess=0.73 recent_re=0.02 ws_hit=0.14
+[DETECT] seq=0.29 reaccess=0.72 recent_re=0.02 ws_hit=0.15
+[DETECT] seq=0.29 reaccess=0.72 recent_re=0.02 ws_hit=0.15
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.28 reaccess=0.72 recent_re=0.02 ws_hit=0.16
+[DETECT] seq=0.28 reaccess=0.72 recent_re=0.02 ws_hit=0.16
+[DETECT] seq=0.28 reaccess=0.72 recent_re=0.02 ws_hit=0.17
+[DETECT] seq=0.28 reaccess=0.72 recent_re=0.02 ws_hit=0.17
+[INFO] Injected 1 PIDs from cgroup
+[DETECT] seq=0.27 reaccess=0.72 recent_re=0.02 ws_hit=0.17
+[DETECT] seq=0.27 reaccess=0.72 recent_re=0.02 ws_hit=0.18
+[DETECT] seq=0.27 reaccess=0.72 recent_re=0.02 ws_hit=0.18
+[DETECT] seq=0.27 reaccess=0.72 recent_re=0.02 ws_hit=0.19
+[DETECT] seq=0.27 reaccess=0.72 recent_re=0.02 ws_hit=0.19
+
+============================================
+Controller Stopped
+============================================
+Total policy switches: 6
+Final policy: s3fifo
+============================================

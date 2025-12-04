@@ -1,0 +1,6 @@
+Policy,Makespan (s),Accesses,Avg Latency (μs),Throughput (K/s),Policy Switches
+DYNAMIC,118.39,"1,337,160",110.4,11.7,6.0
+FIFO,92.30,"1,337,160",86.1,15.2,
+MGLRU,92.22,"1,337,160",90.5,14.5,
+MRU,96.20,"1,337,160",89.7,14.6,
+S3FIFO,92.31,"1,337,160",86.0,15.2,

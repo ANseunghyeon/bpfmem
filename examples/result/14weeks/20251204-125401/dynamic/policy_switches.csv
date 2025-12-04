@@ -1,0 +1,7 @@
+timestamp_ns,from_policy,to_policy,detected_pattern,total_accesses,seq_ratio,reaccess_ratio,switch_count
+2858598251924,s3fifo,mru,MRU,3450,0.500,0.500,0
+2875811821286,mru,s3fifo,S3FIFO,69115,0.360,0.763,1
+2880423653961,s3fifo,mru,MRU,17043,0.119,0.238,2
+2901637338912,mru,s3fifo,S3FIFO,79778,0.381,0.795,3
+2906257460661,s3fifo,mru,MRU,17333,0.117,0.235,4
+2927971786463,mru,s3fifo,S3FIFO,80404,0.378,0.796,5

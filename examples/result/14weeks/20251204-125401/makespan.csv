@@ -1,0 +1,6 @@
+variant,makespan_sec,exit_code
+dynamic,118.385747526,0
+fifo,92.298320796,0
+mglru,92.222352059,0
+mru,96.195216972,0
+s3fifo,92.311306381,0

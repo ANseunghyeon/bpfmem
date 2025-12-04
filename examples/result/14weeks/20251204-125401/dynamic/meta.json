@@ -1,0 +1,12 @@
+{
+    "variant": "dynamic",
+    "run_stamp": "20251204-125401",
+    "start_ns": 1764820935848421637,
+    "end_ns": 1764821054234194576,
+    "makespan_sec": 118.385747526,
+    "file_size_mb": 256,
+    "working_set_mb": 64,
+    "cgroup_memory_mb": 128,
+    "phase_iterations": 3,
+    "exit_code": 0
+}

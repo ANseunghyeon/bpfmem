@@ -1,0 +1,2 @@
+Policy,Makespan (s),Accesses,Avg Latency (μs),Throughput (K/s)
+MRU,92.61,"1,337,160",86.3,15.2
