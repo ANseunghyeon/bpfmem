@@ -177,10 +177,10 @@ void BPF_STRUCT_OPS(sampling_folio_evicted, struct folio *folio)
 {
 	dbg_printk(
 		"cache_ext: Hi from the sampling_folio_evicted hook! :D\n");
-	// if (bpf_cache_ext_list_del(folio)) {
-	// 	dbg_printk("cache_ext: Failed to delete folio from sampling_list\n");
-	// 	return;
-	// }
+	if (bpf_cache_ext_list_del(folio)) {
+		dbg_printk("cache_ext: Failed to delete folio from sampling_list\n");
+		return;
+	}
 
 	u64 key = (u64)folio;
 	bpf_map_delete_elem(&folio_metadata_map, &key);

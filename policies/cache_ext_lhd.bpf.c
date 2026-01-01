@@ -410,10 +410,10 @@ void BPF_STRUCT_OPS(lhd_folio_evicted, struct folio *folio) {
 	u64 age, hit_density, *evictions;
 	struct lhd_class *cls;
 
-	// if (bpf_cache_ext_list_del(folio)) {
-	// 	bpf_printk("cache_ext: Failed to delete folio from sampling_list\n");
-	// 	return;
-	// }
+	if (bpf_cache_ext_list_del(folio)) {
+		bpf_printk("cache_ext: Failed to delete folio from sampling_list\n");
+		return;
+	}
 
 	struct folio_metadata *data = bpf_map_lookup_elem(&folio_metadata_map, &key);
 	if (!data) {

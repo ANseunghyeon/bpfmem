@@ -188,6 +188,9 @@ static int attach_fifo(struct active_state *st, const char *cgroup_path, const c
 	st->fifo = cache_ext_fifo_bpf__open();
 	if (!st->fifo) return ENOMEM;
 
+	st->fifo->rodata->watch_dir_path_len = strlen(watch_dir_full);
+	strcpy((char *)st->fifo->rodata->watch_dir_path, watch_dir_full);
+
 	if (cache_ext_fifo_bpf__load(st->fifo)) return EIO;
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->fifo->maps.inode_watchlist), true))
@@ -213,6 +216,9 @@ static int attach_mru(struct active_state *st, const char *cgroup_path, const ch
 	st->mru = cache_ext_mru_bpf__open();
 	if (!st->mru) return ENOMEM;
 
+	st->mru->rodata->watch_dir_path_len = strlen(watch_dir_full);
+	strcpy((char *)st->mru->rodata->watch_dir_path, watch_dir_full);
+
 	if (cache_ext_mru_bpf__load(st->mru)) return EIO;
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->mru->maps.inode_watchlist), true))
@@ -221,7 +227,8 @@ static int attach_mru(struct active_state *st, const char *cgroup_path, const ch
 	st->link = bpf_map__attach_cache_ext_ops(st->mru->maps.mru_ops, st->cgroup_fd);
 	if (!st->link) return EIO;
 
-	// No extra attach step in original beyond waiting
+	if (cache_ext_mru_bpf__attach(st->mru)) return EIO;
+
 	st->policy = CACHEEXT_POLICY_MRU;
 	return 0;
 }

@@ -98,6 +98,15 @@ int bpf_cache_ext_list_sample(struct mem_cgroup *memcg, u64 list,
 			      struct cache_ext_eviction_ctx *ctx) __ksym;
 u64 bpf_cache_ext_ds_registry_new_list(struct mem_cgroup *memcg) __ksym;
 
+// Inheritance API
+u64 bpf_cache_ext_inherit_to_list(struct mem_cgroup *memcg, u64 target_list,
+				  u64 max_pages, bool add_to_head) __ksym;
+u64 bpf_cache_ext_inherit_get_count(struct mem_cgroup *memcg) __ksym;
+bool bpf_cache_ext_inherit_has_pages(struct mem_cgroup *memcg) __ksym;
+int bpf_cache_ext_inherit_iterate(struct mem_cgroup *memcg, u64 target_list,
+				  int (*callback)(int idx, struct cache_ext_list_node *node),
+				  u64 max_iter) __ksym;
+
 #define BITS_PER_LONG 64
 #define BIT_MASK(nr)		(UL(1) << ((nr) % BITS_PER_LONG))
 #define BIT_WORD(nr)		((nr) / BITS_PER_LONG)

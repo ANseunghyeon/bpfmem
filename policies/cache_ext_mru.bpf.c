@@ -18,6 +18,13 @@ char _license[] SEC("license") = "GPL";
 #define dbg_printk(fmt, ...)
 #endif
 
+// Always-on inheritance debugging
+#define INHERIT_DEBUG 1
+
+
+static u64 mru_folio_added_count = 0;
+static u64 mru_folio_relevant_count = 0;
+static volatile bool mru_initialized = false;  // Guard against race conditions
 
 inline bool is_folio_relevant(struct folio *folio)
 {
@@ -30,7 +37,19 @@ inline bool is_folio_relevant(struct folio *folio)
 	if (folio->mapping->host == NULL) {
 		return false;
 	}
-	bool res = inode_in_watchlist(folio->mapping->host->i_ino);
+	u64 ino = folio->mapping->host->i_ino;
+	bool res = inode_in_watchlist(ino);
+	
+	// Debug: log every 1000th check
+	u64 count = __sync_fetch_and_add(&mru_folio_added_count, 1);
+	if (count % 1000 == 0) {
+		bpf_printk("cache_ext: MRU is_folio_relevant #%llu, ino=%llu, result=%d\n", 
+			   count, ino, res);
+	}
+	if (res) {
+		__sync_fetch_and_add(&mru_folio_relevant_count, 1);
+	}
+	
 	return res;
 }
 
@@ -38,18 +57,45 @@ __u64 mru_list;
 
 s32 BPF_STRUCT_OPS_SLEEPABLE(mru_init, struct mem_cgroup *memcg)
 {
-	dbg_printk("cache_ext: Hi from the mru_init hook! :D\n");
+	bpf_printk("cache_ext: MRU init starting, memcg=%p\n", memcg);
+	
+	// 1. Create new MRU list
 	mru_list = bpf_cache_ext_ds_registry_new_list(memcg);
 	if (mru_list == 0) {
-		bpf_printk("cache_ext: Failed to create mru_list\n");
+		bpf_printk("cache_ext: MRU Failed to create mru_list\n");
 		return -1;
 	}
-	bpf_printk("cache_ext: Created mru_list: %llu\n", mru_list);
+	bpf_printk("cache_ext: MRU Created mru_list: %llu\n", mru_list);
+	
+	// 2. Check for inherited pages from previous policy
+	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
+	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
+	bpf_printk("cache_ext: MRU inherit check: has_pages=%d, count=%llu\n", 
+		   has_pages, inherit_count);
+	
+	// 3. Inherit pages if available
+	if (has_pages && inherit_count > 0) {
+		bpf_printk("cache_ext: MRU inheriting %llu pages\n", inherit_count);
+		
+		// For MRU: add inherited pages to head (most recently used position)
+		u64 inherited = bpf_cache_ext_inherit_to_list(memcg, mru_list, 
+							      0,     // 0 = all pages
+							      true); // add to head
+		bpf_printk("cache_ext: MRU actually inherited %llu pages\n", inherited);
+	} else {
+		bpf_printk("cache_ext: MRU no pages to inherit\n");
+	}
+	
+	mru_initialized = true;
+	
 	return 0;
 }
 
 void BPF_STRUCT_OPS(mru_folio_added, struct folio *folio)
 {
+	if (!mru_initialized)
+		return;
+
 	dbg_printk("cache_ext: Hi from the mru_folio_added hook! :D\n");
 	if (!is_folio_relevant(folio)) {
 		return;
@@ -65,6 +111,9 @@ void BPF_STRUCT_OPS(mru_folio_added, struct folio *folio)
 
 void BPF_STRUCT_OPS(mru_folio_accessed, struct folio *folio)
 {
+	if (!mru_initialized)
+		return;
+
 	int ret;
 	dbg_printk("cache_ext: Hi from the mru_folio_accessed hook! :D\n");
 
@@ -98,6 +147,9 @@ static int iterate_mru(int idx, struct cache_ext_list_node *node)
 void BPF_STRUCT_OPS(mru_evict_folios, struct cache_ext_eviction_ctx *eviction_ctx,
 	       struct mem_cgroup *memcg)
 {
+	if (!mru_initialized)
+		return;
+
 	dbg_printk("cache_ext: Hi from the mru_evict_folios hook! :D\n");
 	int ret = bpf_cache_ext_list_iterate(memcg, mru_list, iterate_mru,
 					     eviction_ctx);

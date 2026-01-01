@@ -9,6 +9,7 @@
 char _license[] SEC("license") = "GPL";
 
 static u64 main_list;
+static volatile bool fifo_initialized = false;
 
 static inline bool is_folio_relevant(struct folio *folio) {
 	if (!folio || !folio->mapping || !folio->mapping->host)
@@ -19,12 +20,30 @@ static inline bool is_folio_relevant(struct folio *folio) {
 
 s32 BPF_STRUCT_OPS_SLEEPABLE(fifo_init, struct mem_cgroup *memcg)
 {
+	bpf_printk("cache_ext: FIFO init starting, memcg=%p\n", memcg);
+
 	main_list = bpf_cache_ext_ds_registry_new_list(memcg);
 	if (main_list == 0) {
 		bpf_printk("cache_ext: init: Failed to create main_list\n");
 		return -1;
 	}
 	bpf_printk("cache_ext: Created main_list: %llu\n", main_list);
+
+	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
+	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
+	bpf_printk("cache_ext: FIFO inherit check: has_pages=%d, count=%llu\n",
+		   has_pages, inherit_count);
+
+	if (has_pages && inherit_count > 0) {
+		u64 inherited = bpf_cache_ext_inherit_to_list(memcg, main_list,
+							      0,
+							      false);
+		bpf_printk("cache_ext: FIFO inherited %llu pages\n", inherited);
+	} else {
+		bpf_printk("cache_ext: FIFO no pages to inherit\n");
+	}
+
+	fifo_initialized = true;
 
 	return 0;
 }
@@ -43,6 +62,9 @@ static int bpf_fifo_evict_cb(int idx, struct cache_ext_list_node *a)
 void BPF_STRUCT_OPS(fifo_evict_folios, struct cache_ext_eviction_ctx *eviction_ctx,
 		    struct mem_cgroup *memcg)
 {
+	if (!fifo_initialized)
+		return;
+
 	if (bpf_cache_ext_list_iterate(memcg, main_list, bpf_fifo_evict_cb, eviction_ctx) < 0) {
 		bpf_printk("cache_ext: evict: Failed to iterate main_list\n");
 		return;
@@ -50,13 +72,16 @@ void BPF_STRUCT_OPS(fifo_evict_folios, struct cache_ext_eviction_ctx *eviction_c
 }
 
 void BPF_STRUCT_OPS(fifo_folio_evicted, struct folio *folio) {
-	// if (bpf_cache_ext_list_del(folio)) {
-	// 	bpf_printk("cache_ext: Failed to delete folio from list\n");
-	// 	return;
-	// }
+	if (bpf_cache_ext_list_del(folio)) {
+		bpf_printk("cache_ext: Failed to delete folio from list\n");
+		return;
+	}
 }
 
 void BPF_STRUCT_OPS(fifo_folio_added, struct folio *folio) {
+	if (!fifo_initialized)
+		return;
+
 	if (!is_folio_relevant(folio))
 		return;
 

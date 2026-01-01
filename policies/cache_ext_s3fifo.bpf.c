@@ -45,6 +45,7 @@ struct {
 
 static u64 main_list;
 static u64 small_list;
+static volatile bool s3fifo_initialized = false;  // Guard against race conditions
 
 /*
  * This is an approximate value based on what we choose to evict, not what is
@@ -53,11 +54,22 @@ static u64 small_list;
 static s64 small_list_size = 0;
 static s64 main_list_size = 0;
 
+static u64 folio_added_count = 0;
+static u64 folio_relevant_count = 0;
+
 static inline bool is_folio_relevant(struct folio *folio) {
 	if (!folio || !folio->mapping || !folio->mapping->host)
 		return false;
 
-	return inode_in_watchlist(folio->mapping->host->i_ino);
+	u64 ino = folio->mapping->host->i_ino;
+	bool relevant = inode_in_watchlist(ino);
+	
+	u64 count = __sync_fetch_and_add(&folio_added_count, 1);
+	if (relevant) {
+		__sync_fetch_and_add(&folio_relevant_count, 1);
+	}
+	
+	return relevant;
 }
 
 static inline struct folio_metadata *get_folio_metadata(struct folio *folio) {
@@ -79,22 +91,84 @@ static inline bool folio_in_ghost(struct folio *folio) {
 	return bpf_map_delete_elem(&ghost_map, &key) != -ENOENT;
 }
 
+/*
+ * Callback for inherit_iterate: classify inherited pages.
+ * Returns:
+ *   0 = continue, move to target_list (small_list)
+ *   1 = stop iteration
+ *   2 = skip this node
+ */
+static int s3fifo_inherit_callback(int idx, struct cache_ext_list_node *node)
+{
+	u64 key = (u64)node->folio;
+	struct folio_metadata new_meta = {
+		.freq = 1,       // Give inherited pages a starting frequency
+		.in_main = false,
+	};
+	
+	// Create metadata for inherited page
+	if (bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY)) {
+		// Skip if we can't create metadata
+		return 2;
+	}
+	
+	__sync_fetch_and_add(&small_list_size, 1);
+	return 0; // Move to target_list (small_list)
+}
+
 s32 BPF_STRUCT_OPS_SLEEPABLE(s3fifo_init, struct mem_cgroup *memcg)
 {
+	bpf_printk("cache_ext: S3FIFO init starting, memcg=%p\n", memcg);
+	
+	// 1. Create lists
 	main_list = bpf_cache_ext_ds_registry_new_list(memcg);
 	if (main_list == 0) {
-		bpf_printk("cache_ext: init: Failed to create main_list\n");
+		bpf_printk("cache_ext: S3FIFO Failed to create main_list\n");
 		return -1;
 	}
-	bpf_printk("cache_ext: Created main_list: %llu\n", main_list);
+	bpf_printk("cache_ext: S3FIFO Created main_list: %llu\n", main_list);
 
 	small_list = bpf_cache_ext_ds_registry_new_list(memcg);
 	if (small_list == 0) {
-		bpf_printk("cache_ext: init: Failed to create small_list\n");
+		bpf_printk("cache_ext: S3FIFO Failed to create small_list\n");
 		return -1;
 	}
-	bpf_printk("cache_ext: Created small_list: %llu\n", small_list);
+	bpf_printk("cache_ext: S3FIFO Created small_list: %llu\n", small_list);
 
+	// 2. Check for inherited pages from previous policy
+	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
+	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
+	bpf_printk("cache_ext: S3FIFO inherit check: has_pages=%d, count=%llu\n", 
+		   has_pages, inherit_count);
+
+	// 3. Inherit pages if available
+	if (has_pages && inherit_count > 0) {
+		bpf_printk("cache_ext: S3FIFO inheriting %llu pages\n", inherit_count);
+		
+		/*
+		 * For S3FIFO: Place inherited pages into small_list.
+		 * - They need to "prove themselves" by being accessed again
+		 * - This respects the S3FIFO admission policy
+		 * - Each page gets initial freq=1
+		 * 
+		 * We use iterate to create metadata for each page.
+		 */
+		int processed = bpf_cache_ext_inherit_iterate(
+			memcg,
+			small_list,              // target list
+			s3fifo_inherit_callback, // callback for metadata creation
+			0                        // 0 = process all pages
+		);
+		
+		bpf_printk("cache_ext: S3FIFO actually inherited %d pages\n", processed);
+	} else {
+		bpf_printk("cache_ext: S3FIFO no pages to inherit\n");
+	}
+
+	// Mark as initialized - MUST be last!
+	s3fifo_initialized = true;
+	bpf_printk("cache_ext: S3FIFO init complete\n");
+	
 	return 0;
 }
 
@@ -273,6 +347,10 @@ static void evict_small(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_
 void BPF_STRUCT_OPS(s3fifo_evict_folios, struct cache_ext_eviction_ctx *eviction_ctx,
 		    struct mem_cgroup *memcg)
 {
+	// Guard: don't evict if not initialized (lists not ready)
+	if (!s3fifo_initialized)
+		return;
+	
 	// bpf_printk("cache_ext: evict_folios: main_list_size: %lld, small_list_size: %lld, cache_size: %lld\n",
 	// 	   main_list_size, small_list_size, cache_size);
 	if (small_list_size >= cache_size / 15 || main_list_size <= 2 * small_list_size)
@@ -282,6 +360,9 @@ void BPF_STRUCT_OPS(s3fifo_evict_folios, struct cache_ext_eviction_ctx *eviction
 }
 
 void BPF_STRUCT_OPS(s3fifo_folio_accessed, struct folio *folio) {
+	if (!s3fifo_initialized)
+		return;
+	
 	if (!is_folio_relevant(folio))
 		return;
 
@@ -297,13 +378,15 @@ void BPF_STRUCT_OPS(s3fifo_folio_accessed, struct folio *folio) {
 }
 
 void BPF_STRUCT_OPS(s3fifo_folio_evicted, struct folio *folio) {
+	if (!s3fifo_initialized)
+		return;
+
 	u64 key = (u64)folio;
 	u8 ghost_val = 0;
 
-	// if (bpf_cache_ext_list_del(folio)) {
-	// 	bpf_printk("cache_ext: Failed to delete folio from sampling_list\n");
-	// 	return;
-	// }
+	// Remove folio from list BEFORE kernel frees it
+	// Otherwise, list iteration will access freed memory → kernel crash
+	bpf_cache_ext_list_del(folio);
 
 	struct ghost_entry ghost_key = {
 		.address_space = (u64)folio->mapping->host,
@@ -336,6 +419,9 @@ void BPF_STRUCT_OPS(s3fifo_folio_evicted, struct folio *folio) {
  * of small list.
  */
 void BPF_STRUCT_OPS(s3fifo_folio_added, struct folio *folio) {
+	if (!s3fifo_initialized)
+		return;
+	
 	if (!is_folio_relevant(folio))
 		return;
 
