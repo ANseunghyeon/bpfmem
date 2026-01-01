@@ -1,6 +1,6 @@
 [submodule "linux"]
 	path = linux
-	url = https://github.com/cache-ext/linux-cache-ext.git
+	url = https://github.com/ANseunghyeon/bpfmem-linux.git
 [submodule "leveldb"]
 	path = leveldb
 	url = https://github.com/cache-ext/leveldb.git
