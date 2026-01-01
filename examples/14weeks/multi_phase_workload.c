@@ -559,15 +559,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    int fd = open(data_path, O_RDWR | O_DIRECT);
+
+    int fd = open(data_path, O_RDWR);
     if (fd < 0) {
-        // Try without O_DIRECT
-        fd = open(data_path, O_RDWR);
-        if (fd < 0) {
-            perror("open data file");
-            return 1;
-        }
-        printf("[WARN] O_DIRECT not supported, using buffered I/O\n");
+        perror("open data file");
+        return 1;
     }
     
     // Prepare results
