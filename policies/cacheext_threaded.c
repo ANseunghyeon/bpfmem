@@ -68,6 +68,7 @@ struct active_state {
 	int lhd_reconfig_prog_fd;
 
 	bool get_scan_pinned;
+	bool unified_maps_pinned;  // unified_metadata_map and access_stats_map pinned
 };
 
 struct req_params {
@@ -101,6 +102,40 @@ static int realpath_128(const char *in, char out_path[PATH_MAX]) {
 	if (realpath(in, out_path) == NULL) return errno ? errno : -1;
 	if (strlen(out_path) > 128) return ENAMETOOLONG;
 	return 0;
+}
+
+// Unified metadata map paths for sharing across policy switches
+#define UNIFIED_METADATA_PIN_PATH "/sys/fs/bpf/cache_ext/unified_metadata_map"
+#define ACCESS_STATS_PIN_PATH "/sys/fs/bpf/cache_ext/access_stats_map"
+#define GHOST_MAP_PIN_PATH "/sys/fs/bpf/cache_ext/unified_ghost_map"
+
+static int ensure_bpffs_dir(void) {
+	struct stat st;
+	if (stat("/sys/fs/bpf/cache_ext", &st) == 0)
+		return 0;
+	return mkdir("/sys/fs/bpf/cache_ext", 0755);
+}
+
+// Try to reuse pinned map, returns 0 on success (map reused), -1 if not pinned
+static int try_reuse_pinned_map(struct bpf_map *map, const char *pin_path) {
+	int pinned_fd = bpf_obj_get(pin_path);
+	if (pinned_fd < 0)
+		return -1;
+	
+	int err = bpf_map__reuse_fd(map, pinned_fd);
+	if (err) {
+		close(pinned_fd);
+		return -1;
+	}
+	return 0;
+}
+
+// Pin map if not already pinned
+static int pin_map_if_needed(struct bpf_map *map, const char *pin_path) {
+	struct stat st;
+	if (stat(pin_path, &st) == 0)
+		return 0;  // Already pinned
+	return bpf_map__pin(map, pin_path);
 }
 
 static void detach_current_locked(struct active_state *st) {
@@ -191,7 +226,21 @@ static int attach_fifo(struct active_state *st, const char *cgroup_path, const c
 	st->fifo->rodata->watch_dir_path_len = strlen(watch_dir_full);
 	strcpy((char *)st->fifo->rodata->watch_dir_path, watch_dir_full);
 
+	// Try to reuse pinned unified maps for metadata inheritance
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->fifo->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->fifo->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->fifo->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_fifo_bpf__load(st->fifo)) return EIO;
+
+	// Pin maps if not already pinned
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->fifo->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->fifo->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->fifo->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->fifo->maps.inode_watchlist), true))
 		return EIO;
@@ -219,7 +268,20 @@ static int attach_mru(struct active_state *st, const char *cgroup_path, const ch
 	st->mru->rodata->watch_dir_path_len = strlen(watch_dir_full);
 	strcpy((char *)st->mru->rodata->watch_dir_path, watch_dir_full);
 
+	// Try to reuse pinned unified maps
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->mru->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->mru->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->mru->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_mru_bpf__load(st->mru)) return EIO;
+
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->mru->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->mru->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->mru->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->mru->maps.inode_watchlist), true))
 		return EIO;
@@ -247,7 +309,20 @@ static int attach_mglru(struct active_state *st, const char *cgroup_path, const 
 	st->mglru->rodata->watch_dir_path_len = strlen(watch_dir_full);
 	strcpy(st->mglru->rodata->watch_dir_path, watch_dir_full);
 
+	// Try to reuse pinned unified maps
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->mglru->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->mglru->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->mglru->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_mglru_bpf__load(st->mglru)) return EIO;
+
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->mglru->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->mglru->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->mglru->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->mglru->maps.inode_watchlist), false))
 		return EIO;
@@ -284,7 +359,20 @@ static int attach_lhd(struct active_state *st, const char *cgroup_path, const ch
 	watch_dir_path_len_map(st->lhd) = strlen(watch_dir_full);
 	strcpy(watch_dir_path_map(st->lhd), watch_dir_full);
 
+	// Try to reuse pinned unified maps
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->lhd->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->lhd->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->lhd->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_lhd_bpf__load(st->lhd)) return EIO;
+
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->lhd->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->lhd->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->lhd->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(inode_watchlist_map(st->lhd)), false))
 		return EIO;
@@ -316,13 +404,27 @@ static int attach_s3fifo(struct active_state *st, const char *cgroup_path, const
 	const uint64_t page_size = 4096;
 	st->s3fifo->rodata->cache_size = cgroup_size_bytes / page_size;
 
-	if (bpf_map__set_max_entries(st->s3fifo->maps.ghost_map, st->s3fifo->rodata->cache_size))
+	if (bpf_map__set_max_entries(st->s3fifo->maps.unified_ghost_map, st->s3fifo->rodata->cache_size))
 		return EIO;
 
 	watch_dir_path_len_map(st->s3fifo) = strlen(watch_dir_full);
 	strcpy(watch_dir_path_map(st->s3fifo), watch_dir_full);
 
+	// Try to reuse pinned unified maps for metadata inheritance
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->s3fifo->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->s3fifo->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->s3fifo->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_s3fifo_bpf__load(st->s3fifo)) return EIO;
+
+	// Pin maps if not already pinned (first policy load)
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->s3fifo->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->s3fifo->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->s3fifo->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(inode_watchlist_map(st->s3fifo)), true))
 		return EIO;
@@ -350,7 +452,20 @@ static int attach_sampling(struct active_state *st, const char *cgroup_path, con
 	st->sampling->rodata->watch_dir_path_len = strlen(watch_dir_full);
 	strcpy(st->sampling->rodata->watch_dir_path, watch_dir_full);
 
+	// Try to reuse pinned unified maps
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->sampling->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->sampling->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->sampling->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_sampling_bpf__load(st->sampling)) return EIO;
+
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->sampling->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->sampling->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->sampling->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->sampling->maps.inode_watchlist), true))
 		return EIO;
@@ -378,7 +493,20 @@ static int attach_get_scan(struct active_state *st, const char *cgroup_path, con
 	st->get_scan->rodata->watch_dir_path_len = strlen(watch_dir_full);
 	strcpy(st->get_scan->rodata->watch_dir_path, watch_dir_full);
 
+	// Try to reuse pinned unified maps
+	ensure_bpffs_dir();
+	try_reuse_pinned_map(st->get_scan->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+	try_reuse_pinned_map(st->get_scan->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+	try_reuse_pinned_map(st->get_scan->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+
 	if (cache_ext_get_scan_bpf__load(st->get_scan)) return EIO;
+
+	if (!st->unified_maps_pinned) {
+		pin_map_if_needed(st->get_scan->maps.unified_metadata_map, UNIFIED_METADATA_PIN_PATH);
+		pin_map_if_needed(st->get_scan->maps.access_stats_map, ACCESS_STATS_PIN_PATH);
+		pin_map_if_needed(st->get_scan->maps.unified_ghost_map, GHOST_MAP_PIN_PATH);
+		st->unified_maps_pinned = true;
+	}
 
 	if (initialize_watch_dir_map(watch_dir_full, bpf_map__fd(st->get_scan->maps.inode_watchlist), false))
 		return EIO;
@@ -501,6 +629,13 @@ int cache_ext(const char *policy_name,
 	return rc;
 }
 
+static void unpin_unified_maps(void) {
+	// Unpin maps when completely shutting down
+	unlink(UNIFIED_METADATA_PIN_PATH);
+	unlink(ACCESS_STATS_PIN_PATH);
+	unlink(GHOST_MAP_PIN_PATH);
+}
+
 int cache_ext_shutdown(void) {
 	if (!g_mgr.th_started) return 0;
 	pthread_mutex_lock(&g_mgr.mu);
@@ -509,7 +644,94 @@ int cache_ext_shutdown(void) {
 	pthread_mutex_unlock(&g_mgr.mu);
 	(void)pthread_join(g_mgr.th, NULL);
 	g_mgr.th_started = false;
+	
+	// Clean up pinned maps on full shutdown
+	if (g_mgr.cur.unified_maps_pinned) {
+		unpin_unified_maps();
+		g_mgr.cur.unified_maps_pinned = false;
+	}
 	return 0;
 }
 
+int cache_ext_get_access_stats_fd(void) {
+	int fd = -1;
+	pthread_mutex_lock(&g_mgr.mu);
+	
+	switch (g_mgr.cur.policy) {
+	case CACHEEXT_POLICY_FIFO:
+		if (g_mgr.cur.fifo)
+			fd = bpf_map__fd(g_mgr.cur.fifo->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_MRU:
+		if (g_mgr.cur.mru)
+			fd = bpf_map__fd(g_mgr.cur.mru->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_MGLRU:
+		if (g_mgr.cur.mglru)
+			fd = bpf_map__fd(g_mgr.cur.mglru->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_LHD:
+		if (g_mgr.cur.lhd)
+			fd = bpf_map__fd(g_mgr.cur.lhd->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_S3FIFO:
+		if (g_mgr.cur.s3fifo)
+			fd = bpf_map__fd(g_mgr.cur.s3fifo->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_SAMPLING:
+		if (g_mgr.cur.sampling)
+			fd = bpf_map__fd(g_mgr.cur.sampling->maps.access_stats_map);
+		break;
+	case CACHEEXT_POLICY_GET_SCAN:
+		if (g_mgr.cur.get_scan)
+			fd = bpf_map__fd(g_mgr.cur.get_scan->maps.access_stats_map);
+		break;
+	default:
+		break;
+	}
+	
+	pthread_mutex_unlock(&g_mgr.mu);
+	return fd;
+}
+
+int cache_ext_get_metadata_map_fd(void) {
+	int fd = -1;
+	pthread_mutex_lock(&g_mgr.mu);
+	
+	switch (g_mgr.cur.policy) {
+	case CACHEEXT_POLICY_FIFO:
+		if (g_mgr.cur.fifo)
+			fd = bpf_map__fd(g_mgr.cur.fifo->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_MRU:
+		if (g_mgr.cur.mru)
+			fd = bpf_map__fd(g_mgr.cur.mru->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_MGLRU:
+		if (g_mgr.cur.mglru)
+			fd = bpf_map__fd(g_mgr.cur.mglru->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_LHD:
+		if (g_mgr.cur.lhd)
+			fd = bpf_map__fd(g_mgr.cur.lhd->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_S3FIFO:
+		if (g_mgr.cur.s3fifo)
+			fd = bpf_map__fd(g_mgr.cur.s3fifo->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_SAMPLING:
+		if (g_mgr.cur.sampling)
+			fd = bpf_map__fd(g_mgr.cur.sampling->maps.unified_metadata_map);
+		break;
+	case CACHEEXT_POLICY_GET_SCAN:
+		if (g_mgr.cur.get_scan)
+			fd = bpf_map__fd(g_mgr.cur.get_scan->maps.unified_metadata_map);
+		break;
+	default:
+		break;
+	}
+	
+	pthread_mutex_unlock(&g_mgr.mu);
+	return fd;
+}
 

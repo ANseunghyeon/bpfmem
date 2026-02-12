@@ -153,9 +153,9 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "Cgroup size: %lu bytes\n", args.cgroup_size);
 	fprintf(stderr, "Cache size: %lu pages\n", skel->rodata->cache_size);
 
-	// Resize ghost_map
-	if (bpf_map__set_max_entries(skel->maps.ghost_map, skel->rodata->cache_size)) {
-		perror("Failed to resize ghost_map");
+	// Resize unified_ghost_map
+	if (bpf_map__set_max_entries(skel->maps.unified_ghost_map, skel->rodata->cache_size)) {
+		perror("Failed to resize unified_ghost_map");
 		ret = 1;
 		goto cleanup;
 	}

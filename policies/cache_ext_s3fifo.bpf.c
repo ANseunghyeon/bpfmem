@@ -5,6 +5,7 @@
 
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
+#include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -12,40 +13,16 @@ char _license[] SEC("license") = "GPL";
 #define INT64_MAX	(9223372036854775807LL)
 
 // Set from userspace. In terms of number of pages.
-// TODO: change
-
-//#define CACHE_SIZE (((1ull << 30) * 2) / 4096)
 #define CACHE_SIZE (((1ull << 20) * 200) / 4096)
 const volatile size_t cache_size = 0;
 
-struct folio_metadata {
-	s64 freq;
-	bool in_main;
-};
-
-struct ghost_entry {
-	u64 address_space;
-	u64 offset;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64);
-	__type(value, struct folio_metadata);
-	__uint(max_entries, 4000000);
-} folio_metadata_map SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__type(key, struct ghost_entry);
-	__type(value, u8);
-	//__uint(max_entries, CACHE_SIZE); // TODO: change
-	__uint(map_flags, BPF_F_NO_COMMON_LRU);  // Per-CPU LRU eviction logic
-} ghost_map SEC(".maps");
+// S3FIFO list indices
+#define S3FIFO_LIST_SMALL  0
+#define S3FIFO_LIST_MAIN   1
 
 static u64 main_list;
 static u64 small_list;
-static volatile bool s3fifo_initialized = false;  // Guard against race conditions
+static volatile bool s3fifo_initialized = false;
 
 /*
  * This is an approximate value based on what we choose to evict, not what is
@@ -64,31 +41,12 @@ static inline bool is_folio_relevant(struct folio *folio) {
 	u64 ino = folio->mapping->host->i_ino;
 	bool relevant = inode_in_watchlist(ino);
 	
-	u64 count = __sync_fetch_and_add(&folio_added_count, 1);
+	__sync_fetch_and_add(&folio_added_count, 1);
 	if (relevant) {
 		__sync_fetch_and_add(&folio_relevant_count, 1);
 	}
 	
 	return relevant;
-}
-
-static inline struct folio_metadata *get_folio_metadata(struct folio *folio) {
-	u64 key = (u64)folio;
-	return bpf_map_lookup_elem(&folio_metadata_map, &key);
-}
-
-/*
- * Check if a folio is in the ghost map and delete the ghost entry.
- * We only check if an element is in the ghost map on inserting into the cache.
- * Relies on bpf_map_delete_elem() returning -ENOENT if the element is not found.
- */
-static inline bool folio_in_ghost(struct folio *folio) {
-	struct ghost_entry key = {
-		.address_space = (u64)folio->mapping->host,
-		.offset = folio->index,
-	};
-	// TODO: handle non-ENOENT errors
-	return bpf_map_delete_elem(&ghost_map, &key) != -ENOENT;
 }
 
 /*
@@ -100,20 +58,42 @@ static inline bool folio_in_ghost(struct folio *folio) {
  */
 static int s3fifo_inherit_callback(int idx, struct cache_ext_list_node *node)
 {
-	u64 key = (u64)node->folio;
-	struct folio_metadata new_meta = {
-		.freq = 1,       // Give inherited pages a starting frequency
-		.in_main = false,
-	};
+	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
 	
-	// Create metadata for inherited page
-	if (bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY)) {
-		// Skip if we can't create metadata
-		return 2;
+	if (!meta) {
+		// Create new metadata for inherited page
+		if (unified_create_metadata_with_freq(node->folio, POLICY_ID_S3FIFO, 
+						       S3FIFO_LIST_SMALL, 1)) {
+			return 2;  // Skip if we can't create metadata
+		}
+		__sync_fetch_and_add(&small_list_size, 1);
+		return 0;
 	}
 	
+	// Convert previous policy's metadata to S3FIFO
+	meta->policy_id = POLICY_ID_S3FIFO;
+	meta->flags |= UNIFIED_FLAG_INHERITED;
+	
+	// Convert access_count to S3FIFO frequency
+	meta->data.mglru.freq = unified_access_count_to_freq(meta->access_count);
+	
+	// Check ghost: if page was evicted and came back, it goes to main
+	struct ghost_metadata ghost;
+	if (unified_pop_ghost(node->folio, &ghost)) {
+		meta->flags |= (UNIFIED_FLAG_IN_MAIN | UNIFIED_FLAG_FROM_GHOST);
+		meta->list_idx = S3FIFO_LIST_MAIN;
+		unified_stats_record_ghost_hit();
+		__sync_fetch_and_add(&main_list_size, 1);
+		// Return 1 to indicate main_list (we'll handle this specially)
+		// Actually, inherit_iterate moves to target_list, so we use small first
+		// For main list placement, we need to handle this differently
+		return 0;  // For now, all go to small_list during inheritance
+	}
+	
+	meta->list_idx = S3FIFO_LIST_SMALL;
+	meta->flags &= ~UNIFIED_FLAG_IN_MAIN;
 	__sync_fetch_and_add(&small_list_size, 1);
-	return 0; // Move to target_list (small_list)
+	return 0;
 }
 
 s32 BPF_STRUCT_OPS_SLEEPABLE(s3fifo_init, struct mem_cgroup *memcg)
@@ -145,14 +125,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(s3fifo_init, struct mem_cgroup *memcg)
 	if (has_pages && inherit_count > 0) {
 		bpf_printk("cache_ext: S3FIFO inheriting %llu pages\n", inherit_count);
 		
-		/*
-		 * For S3FIFO: Place inherited pages into small_list.
-		 * - They need to "prove themselves" by being accessed again
-		 * - This respects the S3FIFO admission policy
-		 * - Each page gets initial freq=1
-		 * 
-		 * We use iterate to create metadata for each page.
-		 */
 		int processed = bpf_cache_ext_inherit_iterate(
 			memcg,
 			small_list,              // target list
@@ -179,15 +151,16 @@ static s64 bpf_s3fifo_score_main_fn(struct cache_ext_list_node *a) {
 	if (folio_test_dirty(a->folio) || folio_test_writeback(a->folio))
 		return INT64_MAX;
 
-	struct folio_metadata *data = get_folio_metadata(a->folio);
+	struct unified_folio_metadata *data = unified_get_metadata(a->folio);
 	if (!data) {
 		bpf_printk("cache_ext: score_fn: Failed to get metadata\n");
 		return INT64_MAX;
 	}
 
-	s64 freq = __sync_sub_and_fetch(&data->freq, 1);
+	__sync_fetch_and_sub(&data->data.mglru.freq, 1);
+	s64 freq = data->data.mglru.freq;
 	if (freq < 0)
-		data->freq = 0;
+		data->data.mglru.freq = 0;
 
 	return freq;
 }
@@ -200,15 +173,16 @@ static int bpf_s3fifo_score_small_fn(int idx, struct cache_ext_list_node *a)
 	if (folio_test_dirty(a->folio) || folio_test_writeback(a->folio))
 		return CACHE_EXT_CONTINUE_ITER;
 
-	struct folio_metadata *data = get_folio_metadata(a->folio);
+	struct unified_folio_metadata *data = unified_get_metadata(a->folio);
 	if (!data) {
 		bpf_printk("cache_ext: score_fn: Failed to get metadata\n");
 		return CACHE_EXT_CONTINUE_ITER;
 	}
 
 	// Move to main list if freq > 1
-	if (data->freq > 1) {
-		data->in_main = true;
+	if (data->data.mglru.freq > 1) {
+		data->flags |= UNIFIED_FLAG_IN_MAIN;
+		data->list_idx = S3FIFO_LIST_MAIN;
 		return CACHE_EXT_CONTINUE_ITER;
 	}
 
@@ -218,11 +192,6 @@ static int bpf_s3fifo_score_small_fn(int idx, struct cache_ext_list_node *a)
 
 static void evict_main(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_cgroup *memcg)
 {
-	/*
-	 * Iterate from head. If freq > 0, move to tail, freq--.
-	 * Otherwise, evict. (When evicting, move to tail in the meantime).
-	 */
-
 	struct sampling_options opts = {
 		.sample_size = 10,
 	};
@@ -232,9 +201,6 @@ static void evict_main(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_c
 		bpf_printk("cache_ext: evict: Failed to sample main_list\n");
 		return;
 	}
-
-	// if (__sync_sub_and_fetch(&main_list_size, eviction_ctx->nr_folios_to_evict) < 0)
-	// 	main_list_size = 0;
 }
 
 #define MAIN_ITER_FN(id) 								\
@@ -246,15 +212,15 @@ static int bpf_s3fifo_score_main_iter_fn_##id(int idx, struct cache_ext_list_nod
 	if (folio_test_dirty(a->folio) || folio_test_writeback(a->folio)) 		\
 		return CACHE_EXT_CONTINUE_ITER; 					\
  											\
-	struct folio_metadata *data = get_folio_metadata(a->folio); 			\
+	struct unified_folio_metadata *data = unified_get_metadata(a->folio); 		\
 	if (!data) { 									\
 		bpf_printk("cache_ext: score_fn: Failed to get metadata\n"); 		\
 		return CACHE_EXT_CONTINUE_ITER; 					\
 	} 										\
  											\
-	s64 freq = __sync_sub_and_fetch(&data->freq, 1); 				\
+	__sync_fetch_and_sub(&data->data.mglru.freq, 1); 				\
+	s64 freq = data->data.mglru.freq; 						\
 	if (freq < id) { 								\
-		/*data->freq = 0;*/ 							\
 		return CACHE_EXT_EVICT_NODE; 						\
 	} 										\
  											\
@@ -268,11 +234,6 @@ MAIN_ITER_FN(3)
 
 static void evict_main_iter(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_cgroup *memcg)
 {
-	/*
-	 * Iterate from head. If freq > 0, move to tail, freq--.
-	 * Otherwise, evict. (When evicting, move to tail in the meantime).
-	 */
-
 	struct cache_ext_iterate_opts opts = {
 		.continue_list = CACHE_EXT_ITERATE_SELF,
 		.continue_mode = CACHE_EXT_ITERATE_TAIL,
@@ -317,13 +278,6 @@ static void evict_main_iter(struct cache_ext_eviction_ctx *eviction_ctx, struct 
 
 static void evict_small(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_cgroup *memcg)
 {
-	/*
-	 * Iterate from head. If freq > 1, move to main list, otherwise evict.
-	 * (When evicting, move to tail in the meantime).
-	 *
-	 * Use the iterate interface.
-	 */
-
 	struct cache_ext_iterate_opts opts = {
 		.continue_list = main_list,
 		.continue_mode = CACHE_EXT_ITERATE_TAIL,
@@ -347,12 +301,9 @@ static void evict_small(struct cache_ext_eviction_ctx *eviction_ctx, struct mem_
 void BPF_STRUCT_OPS(s3fifo_evict_folios, struct cache_ext_eviction_ctx *eviction_ctx,
 		    struct mem_cgroup *memcg)
 {
-	// Guard: don't evict if not initialized (lists not ready)
 	if (!s3fifo_initialized)
 		return;
 	
-	// bpf_printk("cache_ext: evict_folios: main_list_size: %lld, small_list_size: %lld, cache_size: %lld\n",
-	// 	   main_list_size, small_list_size, cache_size);
 	if (small_list_size >= cache_size / 15 || main_list_size <= 2 * small_list_size)
 		evict_small(eviction_ctx, memcg);
 	else
@@ -366,52 +317,46 @@ void BPF_STRUCT_OPS(s3fifo_folio_accessed, struct folio *folio) {
 	if (!is_folio_relevant(folio))
 		return;
 
-	struct folio_metadata *data = get_folio_metadata(folio);
+	struct unified_folio_metadata *data = unified_get_metadata(folio);
 	if (!data) {
 		bpf_printk("cache_ext: accessed: Failed to get metadata\n");
 		return;
 	}
 
-	// Cap frequency at 3
-	if (__sync_add_and_fetch(&data->freq, 1) > 3)
-		data->freq = 3;
+	// Record access in unified metadata
+	bool is_reaccess = unified_record_access(folio);
+	unified_stats_record_access(is_reaccess, unified_is_sequential(folio));
+
+	// Cap frequency at 3 (S3FIFO specific)
+	__sync_fetch_and_add(&data->data.mglru.freq, 1);
+	if (data->data.mglru.freq > 3)
+		data->data.mglru.freq = 3;
 }
 
 void BPF_STRUCT_OPS(s3fifo_folio_evicted, struct folio *folio) {
 	if (!s3fifo_initialized)
 		return;
 
-	u64 key = (u64)folio;
-	u8 ghost_val = 0;
-
 	// Remove folio from list BEFORE kernel frees it
-	// Otherwise, list iteration will access freed memory → kernel crash
 	bpf_cache_ext_list_del(folio);
 
-	struct ghost_entry ghost_key = {
-		.address_space = (u64)folio->mapping->host,
-		.offset = folio->index,
-	};
-
-	// Don't return early, we want to delete the folio metadata regardless
-	if (bpf_map_update_elem(&ghost_map, &ghost_key, &ghost_val, BPF_ANY))
-		bpf_printk("cache_ext: evicted: Failed to add to ghost_map\n");
-
-	struct folio_metadata *data = get_folio_metadata(folio);
+	struct unified_folio_metadata *data = unified_get_metadata(folio);
 	if (!data) {
-		//bpf_printk("cache_ext: evicted: Failed to get metadata\n");
 		return;
 	}
 
-	if (data->in_main)
+	// Add to ghost map for reaccess detection
+	u8 tier = (data->flags & UNIFIED_FLAG_IN_MAIN) ? S3FIFO_LIST_MAIN : S3FIFO_LIST_SMALL;
+	unified_add_ghost(folio, POLICY_ID_S3FIFO, tier);
+	unified_stats_record_eviction();
+
+	if (data->flags & UNIFIED_FLAG_IN_MAIN)
 		__sync_fetch_and_sub(&main_list_size, 1);
 	else
 		__sync_fetch_and_sub(&small_list_size, 1);
 
-	bpf_map_delete_elem(&folio_metadata_map, &key);
-
-	// if (bpf_map_delete_elem(&folio_metadata_map, &key))
-	// 	bpf_printk("cache_ext: evicted: Failed to delete metadata\n");
+	// Delete metadata
+	unified_delete_metadata(folio);
 }
 
 /*
@@ -425,33 +370,41 @@ void BPF_STRUCT_OPS(s3fifo_folio_added, struct folio *folio) {
 	if (!is_folio_relevant(folio))
 		return;
 
-	u64 key = (u64)folio;
-	struct folio_metadata new_meta = {
-		.freq = 0,
-	};
-
 	u64 list_to_add;
-	if (folio_in_ghost(folio)) {
+	u16 list_idx;
+	u32 flags = 0;
+	
+	// Check ghost for reaccess
+	struct ghost_metadata ghost;
+	if (unified_pop_ghost(folio, &ghost)) {
 		list_to_add = main_list;
-		new_meta.in_main = true;
+		list_idx = S3FIFO_LIST_MAIN;
+		flags = UNIFIED_FLAG_IN_MAIN | UNIFIED_FLAG_FROM_GHOST;
 		__sync_fetch_and_add(&main_list_size, 1);
+		unified_stats_record_ghost_hit();
 	} else {
 		list_to_add = small_list;
-		new_meta.in_main = false;
+		list_idx = S3FIFO_LIST_SMALL;
 		__sync_fetch_and_add(&small_list_size, 1);
+		unified_stats_record_unique_page();
 	}
 
 	if (bpf_cache_ext_list_add_tail(list_to_add, folio)) {
-		// TODO: add back to ghost_map?
-		bpf_printk("cache_ext: added: Failed to add folio to main_list\n");
+		bpf_printk("cache_ext: added: Failed to add folio to list\n");
 		return;
 	}
 
-	if (bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY)) {
-		// TODO: add back to ghost_map? + error check delete call?
+	// Create unified metadata
+	if (unified_create_metadata_with_freq(folio, POLICY_ID_S3FIFO, list_idx, 0)) {
 		bpf_cache_ext_list_del(folio);
 		bpf_printk("cache_ext: added: Failed to create folio metadata\n");
 		return;
+	}
+	
+	// Set flags after creation
+	struct unified_folio_metadata *meta = unified_get_metadata(folio);
+	if (meta) {
+		meta->flags = flags;
 	}
 }
 

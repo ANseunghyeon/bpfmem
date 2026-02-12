@@ -6,6 +6,7 @@
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
 #include "cache_ext_lhd.bpf.h"
+#include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -18,11 +19,6 @@ static u64 ewma_num_objects_mass = 0;
 
 static u64 ewma_victim_hit_density = 0;
 
-/*
-static u64 recently_admitted_head = 0;
-static u64 recently_admitted[RECENTLY_ADMITTED_SIZE];
-*/
-
 // Current number of requests
 static u64 timestamp = 0;
 
@@ -30,18 +26,11 @@ static u64 timestamp = 0;
 static u64 overflows = 0;
 
 static u64 lhd_list;
+static volatile bool lhd_initialized = false;
 
 static u64 num_objects = 0;
 
 #define INT64_MAX  (9223372036854775807LL)
-
-// We omit size, assume all folios are same size for now
-struct folio_metadata {
-	u64 last_access_time;
-	u64 last_hit_age;
-	u64 last_last_hit_age;
-	u32 app;
-};
 
 struct lhd_class {
 	u64 total_hits;
@@ -53,13 +42,6 @@ struct lhd_class {
 };
 
 static struct lhd_class classes[NUM_CLASSES];
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64);
-	__type(value, struct folio_metadata);
-	__uint(max_entries, 4000000);
-} folio_metadata_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -81,11 +63,6 @@ static inline bool is_folio_relevant(struct folio *folio) {
 	return inode_in_watchlist(folio->mapping->host->i_ino);
 }
 
-static inline struct folio_metadata *get_folio_metadata(struct folio *folio) {
-	u64 key = (u64)folio;
-	return bpf_map_lookup_elem(&folio_metadata_map, &key);
-}
-
 static inline u32 hit_age_to_class(u64 hit_age) {
 	u32 class = 0;
 
@@ -101,18 +78,18 @@ static inline u32 hit_age_to_class(u64 hit_age) {
 	return class;
 }
 
-static inline u32 get_class_id(struct folio_metadata *data) {
-	u32 hit_age_id = hit_age_to_class(data->last_hit_age + data->last_last_hit_age);
-	return data->app * HIT_AGE_CLASSES + hit_age_id;
+static inline u32 get_class_id(struct unified_folio_metadata *data) {
+	u32 hit_age_id = hit_age_to_class(data->data.lhd.last_hit_age + data->data.lhd.last_last_hit_age);
+	return data->data.lhd.app_class * HIT_AGE_CLASSES + hit_age_id;
 }
 
-static inline struct lhd_class *get_class(struct folio_metadata *data) {
+static inline struct lhd_class *get_class(struct unified_folio_metadata *data) {
 	u32 class_id = get_class_id(data);
 	return &classes[class_id & NUM_CLASSES_MASK];
 }
 
-static inline u64 get_age(struct folio_metadata *data) {
-	u64 age = (timestamp - data->last_access_time) >> age_coarsening_shift;
+static inline u64 get_age(struct unified_folio_metadata *data) {
+	u64 age = (timestamp - (data->insert_time_ns / 1000000)) >> age_coarsening_shift;
 
 	if (age >= MAX_AGE) {
 		overflows++;
@@ -122,7 +99,7 @@ static inline u64 get_age(struct folio_metadata *data) {
 	return age;
 }
 
-static inline u64 get_hit_density(struct folio_metadata *data) {
+static inline u64 get_hit_density(struct unified_folio_metadata *data) {
 	u64 age = get_age(data);
 	if (age == MAX_AGE - 1)
 		return 0;
@@ -277,8 +254,49 @@ int reconfigure(void) {
 	return 0;
 }
 
+/*
+ * Callback for inherit_iterate: convert inherited pages to LHD metadata
+ */
+static int lhd_inherit_callback(int idx, struct cache_ext_list_node *node)
+{
+	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
+	
+	if (!meta) {
+		// Create new metadata for inherited page
+		if (unified_create_metadata(node->folio, POLICY_ID_LHD, 0)) {
+			return 2;  // Skip if we can't create metadata
+		}
+		meta = unified_get_metadata(node->folio);
+		if (!meta)
+			return 2;
+	}
+	
+	// Convert to LHD metadata
+	meta->policy_id = POLICY_ID_LHD;
+	meta->flags |= UNIFIED_FLAG_INHERITED;
+	
+	// Initialize LHD-specific fields based on access history
+	// Use access_count to estimate hit age class
+	if (meta->access_count >= 3) {
+		meta->data.lhd.last_hit_age = 0;  // Frequently accessed = low hit age
+		meta->data.lhd.last_last_hit_age = 0;
+	} else if (meta->access_count >= 2) {
+		meta->data.lhd.last_hit_age = MAX_AGE / 4;
+		meta->data.lhd.last_last_hit_age = MAX_AGE / 2;
+	} else {
+		meta->data.lhd.last_hit_age = MAX_AGE / 2;
+		meta->data.lhd.last_last_hit_age = MAX_AGE;
+	}
+	meta->data.lhd.app_class = DEFAULT_APP_ID % APP_CLASSES;
+	
+	__sync_fetch_and_add(&num_objects, 1);
+	return 0;  // Move to target list
+}
+
 s32 BPF_STRUCT_OPS_SLEEPABLE(lhd_init, struct mem_cgroup *memcg) {
 	uint32_t i;
+
+	bpf_printk("cache_ext: LHD init starting, memcg=%p\n", memcg);
 
 	lhd_list = bpf_cache_ext_ds_registry_new_list(memcg);
 	if (lhd_list == 0) {
@@ -301,6 +319,28 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(lhd_init, struct mem_cgroup *memcg) {
 		}
 	}
 
+	// Check for inherited pages
+	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
+	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
+	bpf_printk("cache_ext: LHD inherit check: has_pages=%d, count=%llu\n",
+		   has_pages, inherit_count);
+
+	if (has_pages && inherit_count > 0) {
+		bpf_printk("cache_ext: LHD inheriting %llu pages\n", inherit_count);
+		
+		int processed = bpf_cache_ext_inherit_iterate(
+			memcg,
+			lhd_list,
+			lhd_inherit_callback,
+			0
+		);
+		
+		bpf_printk("cache_ext: LHD actually inherited %d pages\n", processed);
+	}
+
+	lhd_initialized = true;
+	bpf_printk("cache_ext: LHD init complete\n");
+
 	return 0;
 }
 
@@ -311,7 +351,7 @@ static s64 bpf_lhd_score_fn(struct cache_ext_list_node *a) {
 	if (folio_test_dirty(a->folio) || folio_test_writeback(a->folio))
 		return INT64_MAX;
 
-	struct folio_metadata *data = get_folio_metadata(a->folio);
+	struct unified_folio_metadata *data = unified_get_metadata(a->folio);
 	if (!data) {
 		bpf_printk("cache_ext: score_fn: Failed to get metadata\n");
 		return INT64_MAX;
@@ -323,6 +363,9 @@ static s64 bpf_lhd_score_fn(struct cache_ext_list_node *a) {
 void BPF_STRUCT_OPS(lhd_evict_folios, struct cache_ext_eviction_ctx *eviction_ctx,
 	       struct mem_cgroup *memcg)
 {
+	if (!lhd_initialized)
+		return;
+
 	struct sampling_options opts = {
 		.sample_size = 16,
 	};
@@ -331,52 +374,26 @@ void BPF_STRUCT_OPS(lhd_evict_folios, struct cache_ext_eviction_ctx *eviction_ct
 		bpf_printk("cache_ext: evict: Failed to sample\n");
 		return;
 	}
-
-	/*
-	 * Yields the following verifier error:
-	 * 	R2 is ptr_cache_ext_eviction_ctx invalid variable offset: off=272, var_off=(0x0; 0xf8)
-	 */
-	// Deal with recently_admitted folios
-	/*for (int i = 0; i < RECENTLY_ADMITTED_SIZE; i++) {
-		size_t index = (recently_admitted_head + i) % RECENTLY_ADMITTED_SIZE;
-		struct folio *folio = (struct folio *)recently_admitted[index];
-		if (!folio)
-			break;
-
-		struct folio_metadata *data = get_folio_metadata(folio);
-		if (!data) {
-			bpf_printk("cache_ext: Failed to get metadata\n");
-			continue;
-		}
-
-		u64 hit_density = get_hit_density(data);
-		if (hit_density == -1) {
-			bpf_printk("cache_ext: Failed to get hit density\n");
-			continue;
-		}
-
-		// TODO: improve this?
-		int j;
-		bpf_for(j, 0, eviction_ctx->nr_folios_to_evict) {
-			if (hit_density < eviction_ctx->scores[j & 31]) {
-				eviction_ctx->folios_to_evict[j & 31] = folio;
-				eviction_ctx->scores[j & 31] = hit_density;
-				break;
-			}
-		}
-	}*/
 }
 
 void BPF_STRUCT_OPS(lhd_folio_accessed, struct folio *folio) {
+	if (!lhd_initialized)
+		return;
+
 	if (!is_folio_relevant(folio))
 		return;
 
-	struct folio_metadata *data = get_folio_metadata(folio);
+	struct unified_folio_metadata *data = unified_get_metadata(folio);
 	if (!data) {
 		bpf_printk("cache_ext: accessed: Failed to get metadata\n");
 		return;
 	}
 
+	// Record access for reaccess tracking
+	bool is_reaccess = unified_record_access(folio);
+	unified_stats_record_access(is_reaccess, unified_is_sequential(folio));
+
+	// Update LHD-specific fields
 	u64 age = get_age(data);
 	struct lhd_class *cls = get_class(data);
 	if (!cls) {
@@ -384,10 +401,9 @@ void BPF_STRUCT_OPS(lhd_folio_accessed, struct folio *folio) {
 		return;
 	}
 
-	data->last_last_hit_age = data->last_hit_age;
-	data->last_hit_age = age;
-	data->last_access_time = timestamp;
-	// data->app = DEFAULT_APP_ID % APP_CLASSES;
+	data->data.lhd.last_last_hit_age = data->data.lhd.last_hit_age;
+	data->data.lhd.last_hit_age = age;
+	data->last_access_ns = bpf_ktime_get_ns();
 
 	u64 *hits = cls->hits + age;
 
@@ -406,18 +422,19 @@ void BPF_STRUCT_OPS(lhd_folio_accessed, struct folio *folio) {
 }
 
 void BPF_STRUCT_OPS(lhd_folio_evicted, struct folio *folio) {
-	u64 key = (u64)folio;
+	if (!lhd_initialized)
+		return;
+
 	u64 age, hit_density, *evictions;
 	struct lhd_class *cls;
 
 	if (bpf_cache_ext_list_del(folio)) {
-		bpf_printk("cache_ext: Failed to delete folio from sampling_list\n");
+		bpf_printk("cache_ext: Failed to delete folio from lhd_list\n");
 		return;
 	}
 
-	struct folio_metadata *data = bpf_map_lookup_elem(&folio_metadata_map, &key);
+	struct unified_folio_metadata *data = unified_get_metadata(folio);
 	if (!data) {
-		//bpf_printk("cache_ext: evicted: Failed to get metadata\n");
 		return;
 	}
 
@@ -425,7 +442,7 @@ void BPF_STRUCT_OPS(lhd_folio_evicted, struct folio *folio) {
 	cls = get_class(data);
 	if (!cls) {
 		bpf_printk("cache_ext: evicted: Failed to get class\n");
-		return;
+		goto cleanup;
 	}
 
 	evictions = cls->evictions + age;
@@ -434,16 +451,24 @@ void BPF_STRUCT_OPS(lhd_folio_evicted, struct folio *folio) {
 
 	__sync_fetch_and_sub(&num_objects, 1);
 
+	// Add to ghost for reaccess detection
+	u8 tier = unified_access_count_to_tier(data->access_count);
+	unified_add_ghost(folio, POLICY_ID_LHD, tier);
+	unified_stats_record_eviction();
+
 	// Open-coded get_hit_density()
 	hit_density = cls->hit_densities[age];
 	ewma_victim_hit_density = ewma_decay(ewma_victim_hit_density) + rem_ewma_decay(hit_density);
 
+cleanup:
 	// Remove folio metadata
-	if (bpf_map_delete_elem(&folio_metadata_map, &key))
-		bpf_printk("cache_ext: evicted: Failed to delete metadata\n");
+	unified_delete_metadata(folio);
 }
 
 void BPF_STRUCT_OPS(lhd_folio_added, struct folio *folio) {
+	if (!lhd_initialized)
+		return;
+
 	if (!is_folio_relevant(folio))
 		return;
 
@@ -452,31 +477,34 @@ void BPF_STRUCT_OPS(lhd_folio_added, struct folio *folio) {
 		return;
 	}
 
-	u64 key = (u64)folio;
-	struct folio_metadata new_meta = {
-		.last_access_time = timestamp,
-		.last_hit_age = 0,
-		.last_last_hit_age = MAX_AGE,
-		.app = DEFAULT_APP_ID % APP_CLASSES,
-	};
-
-	if (bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY)) {
+	// Check ghost for reaccess
+	struct ghost_metadata ghost;
+	bool from_ghost = unified_pop_ghost(folio, &ghost);
+	
+	// Create unified metadata
+	if (unified_create_metadata(folio, POLICY_ID_LHD, 0)) {
 		bpf_cache_ext_list_del(folio);
 		bpf_printk("cache_ext: added: Failed to create folio metadata\n");
 		return;
 	}
 
-	// Track likely eviction candidates
-	// u64 hit_density = get_hit_density(&new_meta);
-	// if (hit_density == -1) {
-	// 	bpf_printk("cache_ext: added: Failed to get hit density\n");
-	// 	return;
-	// }
+	struct unified_folio_metadata *meta = unified_get_metadata(folio);
+	if (!meta) {
+		bpf_cache_ext_list_del(folio);
+		return;
+	}
 
-	/*
-	if (hit_density < ewma_victim_hit_density)
-		recently_admitted[recently_admitted_head++ % RECENTLY_ADMITTED_SIZE] = (u64)folio;
-	*/
+	// Initialize LHD-specific fields
+	meta->data.lhd.last_hit_age = 0;
+	meta->data.lhd.last_last_hit_age = MAX_AGE;
+	meta->data.lhd.app_class = DEFAULT_APP_ID % APP_CLASSES;
+	
+	if (from_ghost) {
+		meta->flags |= UNIFIED_FLAG_FROM_GHOST;
+		unified_stats_record_ghost_hit();
+	} else {
+		unified_stats_record_unique_page();
+	}
 
 	__sync_fetch_and_add(&timestamp, 1);
 

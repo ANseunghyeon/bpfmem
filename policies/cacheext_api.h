@@ -36,6 +36,14 @@ int cache_ext(const char *policy_name,
 // Shutdown background manager thread and detach any active policy.
 int cache_ext_shutdown(void);
 
+// Get file descriptor for access_stats_map from current active policy.
+// Returns -1 if no policy is active or map not available.
+int cache_ext_get_access_stats_fd(void);
+
+// Get file descriptor for unified_metadata_map from current active policy.
+// Returns -1 if no policy is active or map not available.
+int cache_ext_get_metadata_map_fd(void);
+
 #ifdef __cplusplus
 }
 #endif

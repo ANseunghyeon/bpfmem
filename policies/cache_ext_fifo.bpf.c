@@ -5,6 +5,7 @@
 
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
+#include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -16,6 +17,29 @@ static inline bool is_folio_relevant(struct folio *folio) {
 		return false;
 
 	return inode_in_watchlist(folio->mapping->host->i_ino);
+}
+
+/*
+ * Callback for inherit_iterate: move inherited pages to FIFO list
+ */
+static int fifo_inherit_callback(int idx, struct cache_ext_list_node *node)
+{
+	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
+	
+	if (!meta) {
+		// Create new metadata for inherited page
+		if (unified_create_metadata(node->folio, POLICY_ID_FIFO, 0)) {
+			return 2;  // Skip if we can't create metadata
+		}
+		return 0;
+	}
+	
+	// Convert to FIFO metadata
+	meta->policy_id = POLICY_ID_FIFO;
+	meta->flags |= UNIFIED_FLAG_INHERITED;
+	meta->list_idx = 0;
+	
+	return 0;  // Move to target list
 }
 
 s32 BPF_STRUCT_OPS_SLEEPABLE(fifo_init, struct mem_cgroup *memcg)
@@ -35,15 +59,20 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(fifo_init, struct mem_cgroup *memcg)
 		   has_pages, inherit_count);
 
 	if (has_pages && inherit_count > 0) {
-		u64 inherited = bpf_cache_ext_inherit_to_list(memcg, main_list,
-							      0,
-							      false);
-		bpf_printk("cache_ext: FIFO inherited %llu pages\n", inherited);
+		// Use iterate callback to set metadata
+		int processed = bpf_cache_ext_inherit_iterate(
+			memcg,
+			main_list,
+			fifo_inherit_callback,
+			0  // 0 = all pages
+		);
+		bpf_printk("cache_ext: FIFO inherited %d pages\n", processed);
 	} else {
 		bpf_printk("cache_ext: FIFO no pages to inherit\n");
 	}
 
 	fifo_initialized = true;
+	bpf_printk("cache_ext: FIFO init complete\n");
 
 	return 0;
 }
@@ -72,10 +101,33 @@ void BPF_STRUCT_OPS(fifo_evict_folios, struct cache_ext_eviction_ctx *eviction_c
 }
 
 void BPF_STRUCT_OPS(fifo_folio_evicted, struct folio *folio) {
+	if (!fifo_initialized)
+		return;
+
 	if (bpf_cache_ext_list_del(folio)) {
 		bpf_printk("cache_ext: Failed to delete folio from list\n");
 		return;
 	}
+	
+	// Add to ghost for reaccess detection
+	struct unified_folio_metadata *meta = unified_get_metadata(folio);
+	if (meta) {
+		unified_add_ghost(folio, POLICY_ID_FIFO, 0);
+		unified_stats_record_eviction();
+		unified_delete_metadata(folio);
+	}
+}
+
+void BPF_STRUCT_OPS(fifo_folio_accessed, struct folio *folio) {
+	if (!fifo_initialized)
+		return;
+
+	if (!is_folio_relevant(folio))
+		return;
+
+	// Record access for reaccess tracking (FIFO doesn't change position on access)
+	bool is_reaccess = unified_record_access(folio);
+	unified_stats_record_access(is_reaccess, unified_is_sequential(folio));
 }
 
 void BPF_STRUCT_OPS(fifo_folio_added, struct folio *folio) {
@@ -89,6 +141,27 @@ void BPF_STRUCT_OPS(fifo_folio_added, struct folio *folio) {
 		bpf_printk("cache_ext: added: Failed to add folio to main_list\n");
 		return;
 	}
+	
+	// Check ghost for reaccess
+	struct ghost_metadata ghost;
+	bool from_ghost = unified_pop_ghost(folio, &ghost);
+	
+	// Create unified metadata
+	if (unified_create_metadata(folio, POLICY_ID_FIFO, 0)) {
+		bpf_cache_ext_list_del(folio);
+		bpf_printk("cache_ext: FIFO: Failed to create folio metadata\n");
+		return;
+	}
+	
+	if (from_ghost) {
+		struct unified_folio_metadata *meta = unified_get_metadata(folio);
+		if (meta) {
+			meta->flags |= UNIFIED_FLAG_FROM_GHOST;
+		}
+		unified_stats_record_ghost_hit();
+	} else {
+		unified_stats_record_unique_page();
+	}
 }
 
 SEC(".struct_ops.link")
@@ -96,5 +169,6 @@ struct cache_ext_ops fifo_ops = {
 	.init = (void *)fifo_init,
 	.evict_folios = (void *)fifo_evict_folios,
 	.folio_evicted = (void *)fifo_folio_evicted,
+	.folio_accessed = (void *)fifo_folio_accessed,
 	.folio_added = (void *)fifo_folio_added,
 };
