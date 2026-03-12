@@ -83,6 +83,8 @@ class GrouppedBarPlot(object):
         groups: List[str],
         colors: List[str],
         y_label=None,
+        line_values: List[List] = None,
+        line_label: str = None,
     ) -> None:
         assert len(names) == len(y_values)
         assert len(y_values) > 0
@@ -92,6 +94,8 @@ class GrouppedBarPlot(object):
         self.num_bars = len(y_values)
         self.colors = colors
         self.y_label = y_label
+        self.line_values = line_values
+        self.line_label = line_label
 
 
 def plot_groupped_bars(
@@ -103,6 +107,7 @@ def plot_groupped_bars(
     measurement_offset=1000,
     bar_width=0.7,
     ylimit=None,
+    line_ylim=None,
     hide_y_ticks=False,
     fontsize=12,
     legend_fontsize=12,
@@ -171,7 +176,43 @@ def plot_groupped_bars(
         plt.tick_params(axis="y", which="both", labelleft=False)
 
     plt.yticks(fontsize=fontsize)
-    plt.legend(fontsize=legend_fontsize, loc=legend_loc)
+    
+    ax1 = plt.gca()
+    
+    if gpplot.line_values:
+        ax2 = ax1.twinx()
+        
+        xs = []
+        ys = []
+        # Collect points: for each group, for each policy
+        for j in range(len(gpplot.groups)):
+            for i in range(gpplot.num_bars):
+                if gpplot.line_values[i] and len(gpplot.line_values[i]) > j:
+                    x = xticks[j] + offsets[i]
+                    y = gpplot.line_values[i][j]
+                    xs.append(x)
+                    ys.append(y)
+        
+        # Sort by x
+        combined = sorted(zip(xs, ys))
+        xs = [c[0] for c in combined]
+        ys = [c[1] for c in combined]
+        
+        ax2.plot(xs, ys, color='red', marker='o', linestyle='-', linewidth=2, label=gpplot.line_label, zorder=10, markersize=8)
+        ax2.set_ylabel(gpplot.line_label if gpplot.line_label else "Ratio", color='black', fontsize=label_fontsize)
+        ax2.tick_params(axis='y', labelcolor='black')
+        if line_ylim:
+            ax2.set_ylim(line_ylim[0], line_ylim[1])
+        else:
+            ax2.set_ylim(0, 1.1)  # Give a bit more headroom
+        
+        # Combine legends
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=legend_fontsize, loc=legend_loc)
+    else:
+        plt.legend(fontsize=legend_fontsize, loc=legend_loc)
+
     plt.tight_layout()
     plt.savefig(output, metadata={"creationDate": None})
     plt.clf()

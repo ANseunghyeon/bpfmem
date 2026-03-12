@@ -136,6 +136,7 @@ def run_command_with_live_output(command, **kwargs):
         "text": True,
         "bufsize": 1,
         "universal_newlines": True,
+        "errors": "replace",
     }
 
     # Update with any user-provided kwargs
@@ -314,6 +315,135 @@ def save_json(path: str, data):
     with open(tmp_path, "w") as f:
         json.dump(data, f, indent=4)
     os.rename(tmp_path, path)
+
+
+def read_cgroup_memory_stat(cgroup_name: str) -> Dict[str, int]:
+    path = f"/sys/fs/cgroup/{cgroup_name}/memory.stat"
+    data = {}
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0]
+                    val = int(parts[1])
+                    data[key] = val
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning(f"Failed to read {path}: {e}")
+    return data
+
+
+def read_proc_kv(path: str) -> Dict[str, int]:
+    data = {}
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(':')
+                    try:
+                        val = int(parts[1])
+                        data[key] = val
+                    except ValueError:
+                        pass
+    except Exception as e:
+        log.warning(f"Failed to read {path}: {e}")
+    return data
+
+
+def read_lru_gen(target_cgroup: str = None) -> str:
+    path = "/sys/kernel/debug/lru_gen"
+    if not os.path.exists(path):
+        return ""
+    
+    content = ""
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+    except PermissionError:
+        try:
+            content = subprocess.check_output(["sudo", "cat", path], encoding="utf-8", errors="ignore")
+        except Exception as e:
+            log.warning(f"Failed to read {path} with sudo: {e}")
+            return ""
+    except Exception as e:
+        log.warning(f"Failed to read {path}: {e}")
+        return ""
+
+    if not target_cgroup:
+        return content
+
+    
+    filtered_output = []
+    lines = content.splitlines()
+    capturing = False
+    
+    # The target cgroup path in lru_gen usually starts with /
+    # e.g. /baseline_test or /user.slice/...
+    target_path = f"/{target_cgroup}"
+    
+    for line in lines:
+        if line.startswith("memcg"):
+            parts = line.split()
+            if len(parts) >= 3:
+                path = parts[2]
+                # Check if path matches target cgroup
+                # It might be exact match or substring if nested, but usually exact for our tests
+                if path == target_path or path.endswith(target_path):
+                    capturing = True
+                    filtered_output.append(line)
+                else:
+                    capturing = False
+        elif capturing:
+            filtered_output.append(line)
+            
+    return "\n".join(filtered_output)
+
+
+def read_bpf_stats() -> Dict[str, int]:
+    stats = {
+        "total_accesses": 0,
+        "reaccesses": 0,
+        "sequential_accesses": 0,
+        "random_accesses": 0,
+        "ghost_hits": 0,
+        "unique_pages": 0,
+        "evictions": 0,
+        "policy_switches": 0
+    }
+    
+    try:
+        cmd = ["sudo", "bpftool", "map", "dump", "name", "access_stats_map", "-j"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return {}
+            
+        data = json.loads(result.stdout)
+        
+        # Data format from bpftool for percpu array:
+        # [{
+        #   "key": ["0x00","0x00","0x00","0x00"],
+        #   "values": [
+        #     { "cpu": 0, "value": { "total_accesses": 123, ... } },
+        #     { "cpu": 1, "value": { "total_accesses": 456, ... } }
+        #   ]
+        # }]
+        
+        for entry in data:
+            for cpu_val in entry.get("values", []):
+                val = cpu_val.get("value", {})
+                for k in stats.keys():
+                    if k in val:
+                        stats[k] += val[k]
+                    
+    except Exception as e:
+        log.warning(f"Failed to read BPF stats: {e}")
+        return {}
+        
+    return stats
 
 
 ##########################
@@ -583,6 +713,11 @@ class BenchmarkFramework(ABC):
                 log.info("Adding extra envs: %s" % extra_envs)
             env.update(extra_envs)
             self.before_benchmark(config)
+            
+            # Start Metrics Collection
+            start_cgroup_stat = read_cgroup_memory_stat(config["cgroup_name"])
+            start_bpf_stats = read_bpf_stats()
+            
             try:
                 if self.second_command:
                     second_cmd = self.second_benchmark_cmd(config)
@@ -607,6 +742,11 @@ class BenchmarkFramework(ABC):
                 log.error("Benchmark failed with error code %s" % e.returncode)
                 log.error("Output was: %s" % e.output)
                 raise e
+            
+            # End Metrics Collection
+            end_cgroup_stat = read_cgroup_memory_stat(config["cgroup_name"])
+            end_lru_gen = read_lru_gen(config.get("cgroup_name"))
+            end_bpf_stats = read_bpf_stats()
 
             self.after_benchmark(config)
             # Save results
@@ -617,6 +757,50 @@ class BenchmarkFramework(ABC):
                 )
             else:
                 bench_run_results = self.parse_results(stdout)
+            
+            # Process and add metrics
+            metrics = {}
+            
+            # Cgroup Memory Stat
+            # Save diffs for everything (useful for counters like pgfault, and changes in gauges)
+            # Save end state for everything (useful for gauges like anon/file usage)
+            for k, v in end_cgroup_stat.items():
+                metrics[f"cgroup_stat_{k}"] = v
+                if k in start_cgroup_stat:
+                    metrics[f"cgroup_stat_diff_{k}"] = v - start_cgroup_stat[k]
+            
+            # LRU GEN
+            if end_lru_gen:
+                metrics["lru_gen_info"] = end_lru_gen
+
+            # BPF Stats (Cache Ext specific)
+            if start_bpf_stats and end_bpf_stats:
+                bpf_diff = {}
+                for k, v in end_bpf_stats.items():
+                    if k in start_bpf_stats:
+                        diff = v - start_bpf_stats[k]
+                        bpf_diff[k] = diff
+                        metrics[f"bpf_{k}"] = diff
+                
+                # Calculate accurate hit ratio from BPF stats
+                # Hit Ratio = reaccesses / total_accesses
+                if "total_accesses" in bpf_diff and bpf_diff["total_accesses"] > 0:
+                    metrics["cache_ext_hit_ratio"] = bpf_diff["reaccesses"] / bpf_diff["total_accesses"]
+                    # Ghost Hit Ratio = ghost_hits / total_accesses
+                    metrics["cache_ext_ghost_hit_ratio"] = bpf_diff["ghost_hits"] / bpf_diff["total_accesses"]
+
+            # Derived Hit Ratio (Page Fault based)
+            if "cgroup_stat_diff_pgfault" in metrics and "cgroup_stat_diff_pgmajfault" in metrics:
+                total_faults = metrics["cgroup_stat_diff_pgfault"]
+                major_faults = metrics["cgroup_stat_diff_pgmajfault"]
+                if total_faults > 0:
+                    minor_faults = total_faults - major_faults
+                    metrics["minor_fault_ratio"] = minor_faults / total_faults
+            
+            # Add metrics to results
+            for k, v in metrics.items():
+                bench_run_results[k] = v
+
             bench_run = BenchRun(config, bench_run_results)
             results.append(bench_run)
             checkpoint_results(results_file, results)
