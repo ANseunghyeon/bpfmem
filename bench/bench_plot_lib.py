@@ -112,7 +112,7 @@ def plot_groupped_bars(
     fontsize=12,
     legend_fontsize=12,
     label_fontsize=None,
-    legend_loc="best",
+    legend_loc="outside",
     text_center_list=None,
 ):
     if label_fontsize is None:
@@ -164,6 +164,22 @@ def plot_groupped_bars(
                         color=gpplot.colors[i],
                         weight="bold",
                     )
+    
+    legend_kwargs = {"fontsize": legend_fontsize}
+    if legend_loc == "outside":
+        legend_count = len(gpplot.names) + (1 if gpplot.line_values and gpplot.line_label else 0)
+        legend_kwargs.update(
+            {
+                "loc": "upper center",
+                "bbox_to_anchor": (0.45, 1.3),
+                "borderaxespad": 1,
+                "ncol": min(4, legend_count),
+                "frameon": False,
+            }
+        )
+    else:
+        legend_kwargs["loc"] = legend_loc
+    
     plt.xticks(xticks, gpplot.groups, fontsize=fontsize)
     if gpplot.y_label:
         plt.ylabel(gpplot.y_label, fontsize=label_fontsize)
@@ -178,7 +194,7 @@ def plot_groupped_bars(
     plt.yticks(fontsize=fontsize)
     
     ax1 = plt.gca()
-    
+
     if gpplot.line_values:
         ax2 = ax1.twinx()
         
@@ -209,11 +225,14 @@ def plot_groupped_bars(
         # Combine legends
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=legend_fontsize, loc=legend_loc)
+        ax1.legend(lines1 + lines2, labels1 + labels2, **legend_kwargs)
     else:
-        plt.legend(fontsize=legend_fontsize, loc=legend_loc)
+        plt.legend(**legend_kwargs)
 
-    plt.tight_layout()
+    if legend_loc == "outside":
+        plt.tight_layout(rect=[0, 0, 1, 0.999])
+    else:
+        plt.tight_layout()
     plt.savefig(output, metadata={"creationDate": None})
     plt.clf()
 
@@ -276,7 +295,7 @@ def leveldb_plot_ycsb_results(
     measurement_offset=1000,
     bar_width=1,
     label_fontsize=None,
-    legend_loc="best",
+    legend_loc="outside",
     text_center_list=None,
 ):
     bench_type_to_group = {
@@ -345,7 +364,7 @@ def bench_plot_groupped_results(
     measurement_offset=1000,
     bar_width=1,
     label_fontsize=None,
-    legend_loc="best",
+    legend_loc="outside",
     normalize_per_group=False,
     text_center_list=None,
 ):
