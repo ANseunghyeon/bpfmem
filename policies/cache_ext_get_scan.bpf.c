@@ -105,21 +105,6 @@ inline bool is_folio_relevant(struct folio *folio)
 	return inode_in_watchlist(folio->mapping->host->i_ino);
 }
 
-static int get_scan_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		if (unified_create_metadata_with_freq(node->folio, POLICY_ID_GET_SCAN, 0, 1))
-			return 2;
-		return 0;
-	}
-	
-	meta->policy_id = POLICY_ID_GET_SCAN;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	return 0;
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(mixed_init, struct mem_cgroup *memcg)
 {
 	int ret;
@@ -135,16 +120,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(mixed_init, struct mem_cgroup *memcg)
 		if (ret != 0) {
 			bpf_printk("cache_ext: Failed to update sampling_list_map\n");
 			return -1;
-		}
-	}
-
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	
-	if (has_pages && inherit_count > 0) {
-		u64 general_list = get_sampling_list(LIST_GENERAL);
-		if (general_list) {
-			bpf_cache_ext_inherit_iterate(memcg, general_list, get_scan_inherit_callback, 0);
 		}
 	}
 

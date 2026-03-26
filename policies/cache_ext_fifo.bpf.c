@@ -19,29 +19,6 @@ static inline bool is_folio_relevant(struct folio *folio) {
 	return inode_in_watchlist(folio->mapping->host->i_ino);
 }
 
-/*
- * Callback for inherit_iterate: move inherited pages to FIFO list
- */
-static int fifo_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		// Create new metadata for inherited page
-		if (unified_create_metadata(node->folio, POLICY_ID_FIFO, 0)) {
-			return 2;  // Skip if we can't create metadata
-		}
-		return 0;
-	}
-	
-	// Convert to FIFO metadata
-	meta->policy_id = POLICY_ID_FIFO;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	meta->list_idx = 0;
-	
-	return 0;  // Move to target list
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(fifo_init, struct mem_cgroup *memcg)
 {
 	bpf_printk("cache_ext: FIFO init starting, memcg=%p\n", memcg);
@@ -52,24 +29,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(fifo_init, struct mem_cgroup *memcg)
 		return -1;
 	}
 	bpf_printk("cache_ext: Created main_list: %llu\n", main_list);
-
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	bpf_printk("cache_ext: FIFO inherit check: has_pages=%d, count=%llu\n",
-		   has_pages, inherit_count);
-
-	if (has_pages && inherit_count > 0) {
-		// Use iterate callback to set metadata
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg,
-			main_list,
-			fifo_inherit_callback,
-			0  // 0 = all pages
-		);
-		bpf_printk("cache_ext: FIFO inherited %d pages\n", processed);
-	} else {
-		bpf_printk("cache_ext: FIFO no pages to inherit\n");
-	}
 
 	fifo_initialized = true;
 	bpf_printk("cache_ext: FIFO init complete\n");

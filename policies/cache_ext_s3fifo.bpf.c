@@ -49,53 +49,6 @@ static inline bool is_folio_relevant(struct folio *folio) {
 	return relevant;
 }
 
-/*
- * Callback for inherit_iterate: classify inherited pages.
- * Returns:
- *   0 = continue, move to target_list (small_list)
- *   1 = stop iteration
- *   2 = skip this node
- */
-static int s3fifo_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		// Create new metadata for inherited page
-		if (unified_create_metadata_with_freq(node->folio, POLICY_ID_S3FIFO, 
-						       S3FIFO_LIST_SMALL, 1)) {
-			return 2;  // Skip if we can't create metadata
-		}
-		__sync_fetch_and_add(&small_list_size, 1);
-		return 0;
-	}
-	
-	// Convert previous policy's metadata to S3FIFO
-	meta->policy_id = POLICY_ID_S3FIFO;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	
-	// Convert access_count to S3FIFO frequency
-	meta->data.mglru.freq = unified_access_count_to_freq(meta->access_count);
-	
-	// Check ghost: if page was evicted and came back, it goes to main
-	struct ghost_metadata ghost;
-	if (unified_pop_ghost(node->folio, &ghost)) {
-		meta->flags |= (UNIFIED_FLAG_IN_MAIN | UNIFIED_FLAG_FROM_GHOST);
-		meta->list_idx = S3FIFO_LIST_MAIN;
-		unified_stats_record_ghost_hit();
-		__sync_fetch_and_add(&main_list_size, 1);
-		// Return 1 to indicate main_list (we'll handle this specially)
-		// Actually, inherit_iterate moves to target_list, so we use small first
-		// For main list placement, we need to handle this differently
-		return 0;  // For now, all go to small_list during inheritance
-	}
-	
-	meta->list_idx = S3FIFO_LIST_SMALL;
-	meta->flags &= ~UNIFIED_FLAG_IN_MAIN;
-	__sync_fetch_and_add(&small_list_size, 1);
-	return 0;
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(s3fifo_init, struct mem_cgroup *memcg)
 {
 	bpf_printk("cache_ext: S3FIFO init starting, memcg=%p\n", memcg);
@@ -114,28 +67,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(s3fifo_init, struct mem_cgroup *memcg)
 		return -1;
 	}
 	bpf_printk("cache_ext: S3FIFO Created small_list: %llu\n", small_list);
-
-	// 2. Check for inherited pages from previous policy
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	bpf_printk("cache_ext: S3FIFO inherit check: has_pages=%d, count=%llu\n", 
-		   has_pages, inherit_count);
-
-	// 3. Inherit pages if available
-	if (has_pages && inherit_count > 0) {
-		bpf_printk("cache_ext: S3FIFO inheriting %llu pages\n", inherit_count);
-		
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg,
-			small_list,              // target list
-			s3fifo_inherit_callback, // callback for metadata creation
-			0                        // 0 = process all pages
-		);
-		
-		bpf_printk("cache_ext: S3FIFO actually inherited %d pages\n", processed);
-	} else {
-		bpf_printk("cache_ext: S3FIFO no pages to inherit\n");
-	}
 
 	// Mark as initialized - MUST be last!
 	s3fifo_initialized = true;

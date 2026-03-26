@@ -254,45 +254,6 @@ int reconfigure(void) {
 	return 0;
 }
 
-/*
- * Callback for inherit_iterate: convert inherited pages to LHD metadata
- */
-static int lhd_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		// Create new metadata for inherited page
-		if (unified_create_metadata(node->folio, POLICY_ID_LHD, 0)) {
-			return 2;  // Skip if we can't create metadata
-		}
-		meta = unified_get_metadata(node->folio);
-		if (!meta)
-			return 2;
-	}
-	
-	// Convert to LHD metadata
-	meta->policy_id = POLICY_ID_LHD;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	
-	// Initialize LHD-specific fields based on access history
-	// Use access_count to estimate hit age class
-	if (meta->access_count >= 3) {
-		meta->data.lhd.last_hit_age = 0;  // Frequently accessed = low hit age
-		meta->data.lhd.last_last_hit_age = 0;
-	} else if (meta->access_count >= 2) {
-		meta->data.lhd.last_hit_age = MAX_AGE / 4;
-		meta->data.lhd.last_last_hit_age = MAX_AGE / 2;
-	} else {
-		meta->data.lhd.last_hit_age = MAX_AGE / 2;
-		meta->data.lhd.last_last_hit_age = MAX_AGE;
-	}
-	meta->data.lhd.app_class = DEFAULT_APP_ID % APP_CLASSES;
-	
-	__sync_fetch_and_add(&num_objects, 1);
-	return 0;  // Move to target list
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(lhd_init, struct mem_cgroup *memcg) {
 	uint32_t i;
 
@@ -317,25 +278,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(lhd_init, struct mem_cgroup *memcg) {
 		bpf_for(j, 0, MAX_AGE) {
 			cls->hit_densities[j] = 1 * HIT_DENSITY_SCALING_FACTOR * (i + 1) / (j + 1);
 		}
-	}
-
-	// Check for inherited pages
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	bpf_printk("cache_ext: LHD inherit check: has_pages=%d, count=%llu\n",
-		   has_pages, inherit_count);
-
-	if (has_pages && inherit_count > 0) {
-		bpf_printk("cache_ext: LHD inheriting %llu pages\n", inherit_count);
-		
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg,
-			lhd_list,
-			lhd_inherit_callback,
-			0
-		);
-		
-		bpf_printk("cache_ext: LHD actually inherited %d pages\n", processed);
 	}
 
 	lhd_initialized = true;

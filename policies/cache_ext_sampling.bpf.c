@@ -5,9 +5,16 @@
 
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
-#include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
+
+#define BPF_STRUCT_OPS(name, args...) \
+	SEC("struct_ops/" #name)      \
+	BPF_PROG(name, ##args)
+
+#define BPF_STRUCT_OPS_SLEEPABLE(name, args...) \
+	SEC("struct_ops.s/" #name)              \
+	BPF_PROG(name, ##args)
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -26,8 +33,18 @@ char _license[] SEC("license") = "GPL";
 
 #define MAX_PAGES (1 << 20)
 
+struct folio_metadata {
+	u64 accesses;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, struct folio_metadata);
+	__uint(max_entries, 4000000);
+} folio_metadata_map SEC(".maps");
+
 __u64 sampling_list;
-static volatile bool sampling_initialized = false;
 
 #define MAX_STAT_NAME_LEN 256
 
@@ -70,39 +87,27 @@ inline void update_stat(char (*stat_name)[MAX_STAT_NAME_LEN], s64 delta) {
 inline bool is_folio_relevant(struct folio *folio)
 {
 	if (!folio) {
+		// bpf_printk("folio not relevant because it's null\n");
 		return false;
 	}
 	if (folio->mapping == NULL) {
+		// bpf_printk("folio not relevant because it's mapping is null\n");
 		return false;
 	}
 	if (folio->mapping->host == NULL) {
+		// bpf_printk("folio not relevant because it's host is null\n");
 		return false;
 	}
 	bool res = inode_in_watchlist(folio->mapping->host->i_ino);
+	// if (!res) {
+	// 	bpf_printk("folio not relevant because it's inode is not in watchlist, inode %llu\n",
+	// 		   folio->mapping->host->i_ino);
+
+	// }
 	return res;
 }
 
-/*
- * Callback for inherit_iterate: move inherited pages to sampling list
- */
-static int sampling_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		if (unified_create_metadata_with_freq(node->folio, POLICY_ID_SAMPLING, 0, 1)) {
-			return 2;
-		}
-		return 0;
-	}
-	
-	meta->policy_id = POLICY_ID_SAMPLING;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	// Preserve access_count as frequency for LFU
-	
-	return 0;
-}
-
+// SEC("struct_ops.s/sampling_init")
 s32 BPF_STRUCT_OPS_SLEEPABLE(sampling_init, struct mem_cgroup *memcg)
 {
 	dbg_printk("cache_ext: Hi from the sampling_init hook! :D\n");
@@ -111,118 +116,77 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(sampling_init, struct mem_cgroup *memcg)
 		bpf_printk("cache_ext: Failed to create sampling_list\n");
 		return -1;
 	}
-	bpf_printk("cache_ext: Created sampling_list: %llu\n", sampling_list);
-
-	// Check for inherited pages
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	
-	if (has_pages && inherit_count > 0) {
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg,
-			sampling_list,
-			sampling_inherit_callback,
-			0
-		);
-		bpf_printk("cache_ext: Sampling inherited %d pages\n", processed);
-	}
-
-	sampling_initialized = true;
+	bpf_printk("cache_ext: Created sampling_list: %llu\n",
+		   sampling_list);
 	return 0;
 }
 
 void BPF_STRUCT_OPS(sampling_folio_added, struct folio *folio)
 {
-	if (!sampling_initialized)
-		return;
-
-	dbg_printk("cache_ext: Hi from the sampling_folio_added hook! :D\n");
+	dbg_printk(
+		"cache_ext: Hi from the sampling_folio_added hook! :D\n");
 	if (!is_folio_relevant(folio)) {
 		return;
 	}
 
 	int ret = bpf_cache_ext_list_add_tail(sampling_list, folio);
 	if (ret != 0) {
-		bpf_printk("cache_ext: Failed to add folio to sampling_list\n");
+		bpf_printk(
+			"cache_ext: Failed to add folio to sampling_list\n");
 		return;
 	}
 	dbg_printk("cache_ext: Added folio to sampling_list\n");
 
 	update_stat(&STAT_TOTAL_PAGES, 1);
 
-	// Check ghost for reaccess
-	struct ghost_metadata ghost;
-	bool from_ghost = unified_pop_ghost(folio, &ghost);
-
-	// Create unified metadata with freq=1 (for LFU scoring)
-	if (unified_create_metadata_with_freq(folio, POLICY_ID_SAMPLING, 0, 1)) {
-		bpf_cache_ext_list_del(folio);
-		bpf_printk("cache_ext: Failed to create folio metadata\n");
-		return;
-	}
-	
-	if (from_ghost) {
-		struct unified_folio_metadata *meta = unified_get_metadata(folio);
-		if (meta) {
-			meta->flags |= UNIFIED_FLAG_FROM_GHOST;
-		}
-		unified_stats_record_ghost_hit();
-	} else {
-		unified_stats_record_unique_page();
-	}
+	// Create folio metadata
+	u64 key = (u64)folio;
+	struct folio_metadata new_meta = { .accesses = 1 };
+	bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY);
 }
 
 void BPF_STRUCT_OPS(sampling_folio_accessed, struct folio *folio)
 {
-	if (!sampling_initialized)
-		return;
-
 	if (!is_folio_relevant(folio)) {
 		return;
 	}
-	
-	struct unified_folio_metadata *meta = unified_get_metadata(folio);
+	// TODO: Update folio metadata with other values we want to track
+	struct folio_metadata *meta;
+	u64 key = (u64)folio;
+	meta = bpf_map_lookup_elem(&folio_metadata_map, &key);
 	if (!meta) {
-		// Create if doesn't exist
-		if (unified_create_metadata_with_freq(folio, POLICY_ID_SAMPLING, 0, 1)) {
-			bpf_printk("cache_ext: Failed to create folio metadata in accessed\n");
+		struct folio_metadata new_meta = { 0 };
+		int ret = bpf_map_update_elem(&folio_metadata_map, &key,
+					      &new_meta, BPF_ANY);
+		if (ret != 0) {
+			bpf_printk(
+				"cache_ext: Failed to create folio metadata in accessed. Return value: %d\n",
+				ret);
 			return;
 		}
-		meta = unified_get_metadata(folio);
-		if (!meta) {
+		meta = bpf_map_lookup_elem(&folio_metadata_map, &key);
+		if (meta == NULL) {
+			bpf_printk("cache_ext: Failed to get created folio metadata in accessed\n");
 			return;
 		}
 	}
-	
-	// Record access for reaccess tracking
-	bool is_reaccess = unified_record_access(folio);
-	unified_stats_record_access(is_reaccess, unified_is_sequential(folio));
-	
-	// Increment frequency for LFU
-	__sync_fetch_and_add(&meta->data.mglru.freq, 1);
+	__sync_fetch_and_add(&meta->accesses, 1);
 }
 
 void BPF_STRUCT_OPS(sampling_folio_evicted, struct folio *folio)
 {
-	if (!sampling_initialized)
-		return;
+	dbg_printk(
+		"cache_ext: Hi from the sampling_folio_evicted hook! :D\n");
+	// if (bpf_cache_ext_list_del(folio)) {
+	// 	dbg_printk("cache_ext: Failed to delete folio from sampling_list\n");
+	// 	return;
+	// }
 
-	dbg_printk("cache_ext: Hi from the sampling_folio_evicted hook! :D\n");
-	if (bpf_cache_ext_list_del(folio)) {
-		dbg_printk("cache_ext: Failed to delete folio from sampling_list\n");
-		return;
-	}
-
-	// Add to ghost for reaccess detection
-	struct unified_folio_metadata *meta = unified_get_metadata(folio);
-	if (meta) {
-		unified_add_ghost(folio, POLICY_ID_SAMPLING, 0);
-		unified_stats_record_eviction();
-		unified_delete_metadata(folio);
-	}
-	
+	u64 key = (u64)folio;
+	bpf_map_delete_elem(&folio_metadata_map, &key);
 	update_stat(&STAT_TOTAL_PAGES, -1);
 	update_stat(&STAT_EVICTED_TOTAL_PAGES, 1);
+
 }
 
 static inline bool is_last_page_in_file(struct folio *folio)
@@ -235,7 +199,8 @@ static inline bool is_last_page_in_file(struct folio *folio)
 	if (!inode) {
 		return false;
 	}
-	if (folio_test_large(folio) || folio_test_hugetlb(folio)) {
+	// TODO: Handle hugepages
+	if (folio_test_large(folio) ||  folio_test_hugetlb(folio)) {
 		bpf_printk("cache_ext: Hugepages not supported\n");
 		return false;
 	}
@@ -249,18 +214,19 @@ static inline bool is_last_page_in_file(struct folio *folio)
 static s64 bpf_lfu_score_fn(struct cache_ext_list_node *a)
 {
 	s64 score = 0;
-	struct unified_folio_metadata *meta = unified_get_metadata(a->folio);
-	if (!meta) {
+	struct folio_metadata *meta_a;
+	u64 key_a = (u64)a->folio;
+	meta_a = bpf_map_lookup_elem(&folio_metadata_map, &key_a);
+	if (!meta_a) {
 		bpf_printk("cache_ext: Failed to get metadata\n");
 		return INT64_MAX;
 	}
-	
-	// Use freq as LFU score
-	score = meta->data.mglru.freq;
-	
+	score = meta_a->accesses;
 	if (APP_TYPE == LEVELDB) {
+		// In leveldb, the index block is at the end of the file.
 		bool is_last_page = is_last_page_in_file(a->folio);
 		if (is_last_page) {
+			// bpf_printk("cache_ext: Found last page in file\n");
 			score += 100000;
 		}
 	}
@@ -278,10 +244,8 @@ void BPF_STRUCT_OPS(sampling_evict_folios,
 		    struct cache_ext_eviction_ctx *eviction_ctx,
 		    struct mem_cgroup *memcg)
 {
-	if (!sampling_initialized)
-		return;
-
-	dbg_printk("cache_ext: Hi from the sampling_evict_folios hook! :D\n");
+	dbg_printk(
+		"cache_ext: Hi from the sampling_evict_folios hook! :D\n");
 
 	struct sampling_options sampling_opts = {
 		.sample_size = 20,
@@ -291,6 +255,11 @@ void BPF_STRUCT_OPS(sampling_evict_folios,
 	dbg_printk("cache_ext: Evicting %d pages (%d requested)\n",
 			   eviction_ctx->nr_folios_to_evict,
 			   eviction_ctx->request_nr_folios_to_evict);
+	dbg_printk("cache_ext: Printing first two and last two folios: %p %p %p %p\n",
+			   eviction_ctx->folios_to_evict[0],
+			   eviction_ctx->folios_to_evict[1],
+			   eviction_ctx->folios_to_evict[32 - 2],
+			   eviction_ctx->folios_to_evict[32 - 1]);
 }
 
 SEC(".struct_ops.link")

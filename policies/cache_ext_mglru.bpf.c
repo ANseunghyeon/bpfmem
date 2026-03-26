@@ -506,63 +506,6 @@ inline bool is_folio_relevant(struct folio *folio)
 	return res;
 }
 
-/*
- * Callback for inherit_iterate: convert inherited pages to MGLRU metadata
- */
-static int mglru_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct mglru_global_metadata *lrugen;
-	int key__ = 0;
-	lrugen = bpf_map_lookup_elem(&mglru_global_metadata_map, &key__);
-	if (!lrugen)
-		return 2;
-
-	DEFINE_MAX_SEQ(lrugen);
-	
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		// Create new metadata for inherited page
-		if (unified_create_metadata_with_freq(node->folio, POLICY_ID_MGLRU, 0, 1)) {
-			return 2;  // Skip if we can't create metadata
-		}
-		meta = unified_get_metadata(node->folio);
-		if (!meta)
-			return 2;
-	}
-	
-	// Convert to MGLRU metadata
-	meta->policy_id = POLICY_ID_MGLRU;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	
-	// Determine generation based on access_count
-	u32 target_gen;
-	if (meta->access_count >= 3) {
-		target_gen = lru_gen_from_seq(max_seq);  // youngest
-		meta->flags |= UNIFIED_FLAG_ACTIVE;
-	} else if (meta->access_count >= 2) {
-		target_gen = lru_gen_from_seq(max_seq - 1);
-	} else {
-		target_gen = lru_gen_from_seq(lrugen->min_seq);  // oldest
-	}
-	
-	meta->data.mglru.gen = target_gen;
-	meta->data.mglru.freq = meta->access_count;  // Use access_count as refs
-	
-	// Check ghost for refault tracking
-	struct ghost_metadata ghost;
-	if (unified_pop_ghost(node->folio, &ghost)) {
-		meta->flags |= UNIFIED_FLAG_FROM_GHOST;
-		update_refaulted_stat(lrugen, ghost.tier, 1);
-	}
-	
-	update_nr_pages_stat(lrugen, target_gen, 1);
-	
-	// Return generation index to move to the correct list
-	// Note: inherit_iterate moves to target_list, we handle lists in init
-	return 0;
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(mglru_init, struct mem_cgroup *memcg)
 {
 	bpf_printk("cache_ext: MGLRU init starting, memcg=%p\n", memcg);
@@ -577,26 +520,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(mglru_init, struct mem_cgroup *memcg)
 			return -1;
 		}
 		mglru_lists[i] = list_ptr;
-	}
-
-	// Check for inherited pages
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	bpf_printk("cache_ext: MGLRU inherit check: has_pages=%d, count=%llu\n",
-		   has_pages, inherit_count);
-
-	if (has_pages && inherit_count > 0) {
-		bpf_printk("cache_ext: MGLRU inheriting %llu pages\n", inherit_count);
-		
-		// Inherit to gen 0 (oldest), callback will set proper generation
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg,
-			mglru_lists[0],
-			mglru_inherit_callback,
-			0
-		);
-		
-		bpf_printk("cache_ext: MGLRU actually inherited %d pages\n", processed);
 	}
 
 	mglru_initialized = true;

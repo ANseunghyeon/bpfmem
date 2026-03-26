@@ -51,29 +51,6 @@ inline bool is_folio_relevant(struct folio *folio)
 
 __u64 mru_list;
 
-/*
- * Callback for inherit_iterate: move inherited pages to MRU list
- */
-static int mru_inherit_callback(int idx, struct cache_ext_list_node *node)
-{
-	struct unified_folio_metadata *meta = unified_get_metadata(node->folio);
-	
-	if (!meta) {
-		// Create new metadata for inherited page
-		if (unified_create_metadata(node->folio, POLICY_ID_MRU, 0)) {
-			return 2;  // Skip if we can't create metadata
-		}
-		return 0;
-	}
-	
-	// Convert to MRU metadata
-	meta->policy_id = POLICY_ID_MRU;
-	meta->flags |= UNIFIED_FLAG_INHERITED;
-	meta->list_idx = 0;
-	
-	return 0;  // Move to target list
-}
-
 s32 BPF_STRUCT_OPS_SLEEPABLE(mru_init, struct mem_cgroup *memcg)
 {
 	bpf_printk("cache_ext: MRU init starting, memcg=%p\n", memcg);
@@ -85,28 +62,6 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(mru_init, struct mem_cgroup *memcg)
 		return -1;
 	}
 	bpf_printk("cache_ext: MRU Created mru_list: %llu\n", mru_list);
-	
-	// 2. Check for inherited pages from previous policy
-	bool has_pages = bpf_cache_ext_inherit_has_pages(memcg);
-	u64 inherit_count = bpf_cache_ext_inherit_get_count(memcg);
-	bpf_printk("cache_ext: MRU inherit check: has_pages=%d, count=%llu\n", 
-		   has_pages, inherit_count);
-	
-	// 3. Inherit pages if available
-	if (has_pages && inherit_count > 0) {
-		bpf_printk("cache_ext: MRU inheriting %llu pages\n", inherit_count);
-		
-		// For MRU: use iterate callback to set metadata
-		int processed = bpf_cache_ext_inherit_iterate(
-			memcg, 
-			mru_list,
-			mru_inherit_callback,
-			0  // 0 = all pages
-		);
-		bpf_printk("cache_ext: MRU actually inherited %d pages\n", processed);
-	} else {
-		bpf_printk("cache_ext: MRU no pages to inherit\n");
-	}
 	
 	mru_initialized = true;
 	bpf_printk("cache_ext: MRU init complete\n");
