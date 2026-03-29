@@ -5,6 +5,7 @@
 
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
+#include "cache_ext_lhd.bpf.h"
 #include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
@@ -300,6 +301,175 @@ static inline bool try_to_inc_max_seq(struct mglru_global_metadata *lrugen) {
 }
 
 
+
+// LHD Variables
+static u64 lhd_next_reconfiguration = REQS_PER_RECONFIG;
+static u32 lhd_num_reconfigurations = 0;
+static u64 lhd_age_coarsening_shift = INITIAL_AGE_COARSENING_SHIFT;
+static u64 lhd_ewma_num_objects = 0;
+static u64 lhd_ewma_num_objects_mass = 0;
+static u64 lhd_ewma_victim_hit_density = 0;
+static u64 lhd_timestamp = 0;
+static u64 lhd_overflows = 0;
+static u64 lhd_num_objects = 0;
+
+struct lhd_class {
+	u64 total_hits;
+	u64 total_evictions;
+	u64 hits[MAX_AGE];
+	u64 evictions[MAX_AGE];
+	u64 hit_densities[MAX_AGE];
+};
+
+static struct lhd_class lhd_classes[NUM_CLASSES];
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 4096);
+} lhd_events SEC(".maps");
+
+// LHD Helpers
+static inline long lhd_ewma_decay(u64 val) { return (val * 9) / 10; }
+static inline long lhd_rem_ewma_decay(u64 val) { return val / 10; }
+static inline u32 lhd_hit_age_to_class(u64 hit_age) {
+	u32 class = 0;
+	if (hit_age == 0) return 0;
+	while (hit_age < MAX_AGE && class < HIT_AGE_CLASSES - 1) {
+		hit_age <<= 1;
+		class++;
+	}
+	return class;
+}
+static inline u32 lhd_get_class_id(struct unified_folio_metadata *data) {
+	u32 hit_age_id = lhd_hit_age_to_class(data->data.lhd.last_hit_age + data->data.lhd.last_last_hit_age);
+	return data->data.lhd.app_class * HIT_AGE_CLASSES + hit_age_id;
+}
+static inline struct lhd_class *lhd_get_class(struct unified_folio_metadata *data) {
+	u32 class_id = lhd_get_class_id(data);
+	return &lhd_classes[class_id & NUM_CLASSES_MASK];
+}
+static inline u64 lhd_get_age(struct unified_folio_metadata *data) {
+	u64 age = (lhd_timestamp - (data->insert_time_ns / 1000000)) >> lhd_age_coarsening_shift;
+	if (age >= MAX_AGE) { lhd_overflows++; return MAX_AGE - 1; } 
+	return age;
+}
+static inline u64 lhd_get_hit_density(struct unified_folio_metadata *data) {
+	u64 age = lhd_get_age(data);
+	if (age == MAX_AGE - 1) return 0;
+	struct lhd_class *cls = lhd_get_class(data);
+	if (!cls) return -1;
+	return cls->hit_densities[age & MAX_AGE_MASK];
+}
+static inline void lhd_update_class(struct lhd_class *class) {
+	int i;
+	class->total_hits = 0;
+	class->total_evictions = 0;
+	bpf_for(i, 0, MAX_AGE) {
+		class->hits[i] = lhd_ewma_decay(class->hits[i]);
+		class->evictions[i] = lhd_ewma_decay(class->evictions[i]);
+		class->total_hits += class->hits[i];
+		class->total_evictions += class->evictions[i];
+	}
+}
+static inline void lhd_stretch_distribution(s32 delta) {
+	int i;
+	bpf_for(i, 0, NUM_CLASSES) {
+		struct lhd_class *cls = &lhd_classes[i];
+		int init_age = MAX_AGE >> (-delta);
+		u32 j;
+		bpf_for(j, init_age, MAX_AGE - 1) {
+			cls->hits[MAX_AGE - 1] += cls->hits[j];
+			cls->evictions[MAX_AGE - 1] = cls->evictions[j];
+		}
+		bpf_for(j, 2, MAX_AGE + 1) {
+			u32 index = MAX_AGE - j;
+			cls->hits[index & MAX_AGE_MASK] = cls->hits[(j >> (-delta)) & MAX_AGE_MASK] / (1 << (-delta));
+			cls->evictions[index & MAX_AGE_MASK] = cls->evictions[(j >> (-delta)) & MAX_AGE_MASK] / (1 << (-delta));
+		}
+	}
+}
+static inline void lhd_compress_distribution(s32 delta) {
+	int i;
+	bpf_for(i, 0, NUM_CLASSES) {
+		struct lhd_class *cls = &lhd_classes[i];
+		u32 j;
+		bpf_for(j, 0, MAX_AGE >> delta) {
+			cls->hits[j & MAX_AGE_MASK] = cls->hits[(j << delta) & MAX_AGE_MASK];
+			cls->evictions[j & MAX_AGE_MASK] = cls->evictions[(j << delta) & MAX_AGE_MASK];
+			int k;
+			bpf_for(k, 1, (1 << delta)) {
+				cls->hits[j & MAX_AGE_MASK] += cls->hits[((j << delta) + k) & MAX_AGE_MASK];
+				cls->evictions[j & MAX_AGE_MASK] += cls->evictions[((j << delta) + k) & MAX_AGE_MASK];
+			}
+		}
+		bpf_for(j, MAX_AGE >> delta, MAX_AGE - 1) {
+			cls->hits[j & MAX_AGE_MASK] = 0;
+			cls->evictions[j & MAX_AGE_MASK] = 0;
+		}
+	}
+}
+static inline void lhd_adapt_age_coarsening(void) {
+	lhd_ewma_num_objects = lhd_ewma_decay(lhd_ewma_num_objects);
+	lhd_ewma_num_objects_mass = lhd_ewma_decay(lhd_ewma_num_objects_mass);
+	lhd_ewma_num_objects += lhd_num_objects * NUM_OBJECTS_SCALING_FACTOR;
+	lhd_ewma_num_objects_mass += 1;
+	u64 num_objects_coarsening = lhd_ewma_num_objects / lhd_ewma_num_objects_mass;
+	u64 optimal_age_coarsening = 1 * num_objects_coarsening * AGE_COARSENING_ERROR_TOLERANCE / MAX_AGE;
+	if (lhd_num_reconfigurations == 5 || lhd_num_reconfigurations == 25) {
+		u32 optimal_age_coarsening_log2 = 1;
+		while ((1 << optimal_age_coarsening_log2) * NUM_OBJECTS_SCALING_FACTOR < optimal_age_coarsening)
+			optimal_age_coarsening_log2++;
+		s32 delta = optimal_age_coarsening_log2 - lhd_age_coarsening_shift;
+		lhd_age_coarsening_shift = optimal_age_coarsening_log2;
+		lhd_ewma_num_objects *= 8;
+		lhd_ewma_num_objects_mass *= 8;
+		if (delta < 0) lhd_stretch_distribution(delta);
+		else if (delta > 0) lhd_compress_distribution(delta);
+	}
+}
+static inline void lhd_model_hit_density(void) {
+	int i;
+	bpf_for(i, 0, NUM_CLASSES) {
+		struct lhd_class *cls = &lhd_classes[i];
+		u64 total_hits = cls->hits[MAX_AGE - 1];
+		u64 total_events = total_hits + cls->evictions[MAX_AGE - 1];
+		u64 lifetime_unconditoned = total_events;
+		int j;
+		bpf_for(j, 2, MAX_AGE + 1) {
+			u32 index = MAX_AGE - j;
+			total_hits += cls->hits[index & MAX_AGE_MASK];
+			total_events += cls->evictions[index & MAX_AGE_MASK];
+			lifetime_unconditoned += total_events;
+			if (total_events > TOTAL_EVENTS_THRESH)
+				cls->hit_densities[index & MAX_AGE_MASK] = total_hits * HIT_DENSITY_SCALING_FACTOR / lifetime_unconditoned;
+			else
+				cls->hit_densities[index & MAX_AGE_MASK] = 0;
+		}
+	}
+}
+
+SEC("syscall")
+int reconfigure(void) {
+	int i;
+	bpf_for(i, 0, NUM_CLASSES) {
+		lhd_update_class(&lhd_classes[i]);
+	}
+	lhd_adapt_age_coarsening();
+	lhd_model_hit_density();
+	lhd_overflows = 0;
+	return 0;
+}
+
+static s64 bpf_lhd_score_fn(int idx, struct cache_ext_list_node *a) {
+	if (!folio_test_uptodate(a->folio) || !folio_test_lru(a->folio))
+		return INT64_MAX;
+	if (folio_test_dirty(a->folio) || folio_test_writeback(a->folio))
+		return INT64_MAX;
+	struct unified_folio_metadata *data = unified_get_metadata(a->folio);
+	if (!data) return INT64_MAX;
+	return lhd_get_hit_density(data);
+}
+
 s32 BPF_STRUCT_OPS_SLEEPABLE(unified_init, struct mem_cgroup *memcg)
 {
 	bpf_printk("cache_ext: Unified init starting\n");
@@ -329,6 +499,17 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(unified_init, struct mem_cgroup *memcg)
 
 	bpf_printk("cache_ext: Lists created\n");
 
+	
+	// Initialize LHD hit densities
+	uint32_t lhd_i;
+	bpf_for(lhd_i, 0, NUM_CLASSES) {
+		uint32_t lhd_j;
+		struct lhd_class *cls = &lhd_classes[lhd_i];
+		bpf_for(lhd_j, 0, MAX_AGE) {
+			cls->hit_densities[lhd_j] = 1 * HIT_DENSITY_SCALING_FACTOR * (lhd_i + 1) / (lhd_j + 1);
+		}
+	}
+
 	unified_initialized = true;
 	return 0;
 }
@@ -347,7 +528,45 @@ void BPF_STRUCT_OPS(unified_folio_added, struct folio *folio)
 		return;
 	}
 
+	
+	if (policy == POLICY_ID_LHD) {
+		struct ghost_metadata ghost;
+		bool from_ghost = unified_pop_ghost(folio, &ghost);
+		
+		if (bpf_cache_ext_list_add_tail(list_primary, folio)) return;
+		
+		if (unified_create_metadata(folio, policy, 0)) {
+			bpf_cache_ext_list_del(folio);
+			return;
+		}
+		
+		struct unified_folio_metadata *meta = unified_get_metadata(folio);
+		if (meta) {
+			meta->data.lhd.last_hit_age = 0;
+			meta->data.lhd.last_last_hit_age = MAX_AGE;
+			meta->data.lhd.app_class = DEFAULT_APP_ID % APP_CLASSES;
+			
+			if (from_ghost) {
+				meta->flags |= UNIFIED_FLAG_FROM_GHOST;
+				unified_stats_record_ghost_hit();
+			} else {
+				unified_stats_record_unique_page();
+			}
+		}
+		
+		__sync_fetch_and_add(&lhd_timestamp, 1);
+		__sync_fetch_and_add(&lhd_num_objects, 1);
+		
+		if (__sync_sub_and_fetch(&lhd_next_reconfiguration, 1) == 0) {
+			lhd_next_reconfiguration = REQS_PER_RECONFIG;
+			lhd_num_reconfigurations++;
+			bpf_ringbuf_output(&lhd_events, &lhd_num_reconfigurations, sizeof(lhd_num_reconfigurations), 0);
+		}
+		return;
+	}
+
 	u64 target_list = list_primary;
+
 	u16 list_idx = 0;
 	u32 flags = 0;
 	
@@ -411,7 +630,29 @@ void BPF_STRUCT_OPS(unified_folio_accessed, struct folio *folio)
 	case POLICY_ID_MGLRU:
 		__sync_fetch_and_add(&meta->data.mglru.freq, 1);
 		break;
+	
+	case POLICY_ID_LHD: {
+		u64 age = lhd_get_age(meta);
+		struct lhd_class *cls = lhd_get_class(meta);
+		if (cls) {
+			meta->data.lhd.last_last_hit_age = meta->data.lhd.last_hit_age;
+			meta->data.lhd.last_hit_age = age;
+			meta->last_access_ns = bpf_ktime_get_ns();
+			
+			u64 *hits = cls->hits + age;
+			__sync_fetch_and_add(hits, 1 * HIT_SCALING_FACTOR);
+			__sync_fetch_and_add(&lhd_timestamp, 1);
+			
+			if (__sync_sub_and_fetch(&lhd_next_reconfiguration, 1) == 0) {
+				lhd_next_reconfiguration = REQS_PER_RECONFIG;
+				lhd_num_reconfigurations++;
+				bpf_ringbuf_output(&lhd_events, &lhd_num_reconfigurations, sizeof(lhd_num_reconfigurations), 0);
+			}
+		}
+		break;
+	}
 	default: break;
+
 	}
 }
 
@@ -432,7 +673,22 @@ void BPF_STRUCT_OPS(unified_folio_evicted, struct folio *folio)
 		else __sync_fetch_and_sub(&s3fifo_small_size, 1);
 	}
 	
-	if (policy == POLICY_ID_MGLRU || meta_policy == POLICY_ID_MGLRU) {
+	
+	if (policy == POLICY_ID_LHD || meta_policy == POLICY_ID_LHD) {
+		u64 age = lhd_get_age(meta);
+		struct lhd_class *cls = lhd_get_class(meta);
+		if (cls) {
+			u64 *evictions = cls->evictions + age;
+			__sync_fetch_and_add(evictions, 1 * HIT_SCALING_FACTOR);
+			__sync_fetch_and_sub(&lhd_num_objects, 1);
+			
+			u64 hit_density = cls->hit_densities[age];
+			lhd_ewma_victim_hit_density = lhd_ewma_decay(lhd_ewma_victim_hit_density) + lhd_rem_ewma_decay(hit_density);
+		}
+		u8 tier = unified_access_count_to_tier(meta->access_count);
+		unified_add_ghost(folio, POLICY_ID_LHD, tier);
+	} else if (policy == POLICY_ID_MGLRU || meta_policy == POLICY_ID_MGLRU) {
+
 		DEFINE_LRUGEN_void;
 		int tier = lru_tier_from_refs(atomic_long_read(&meta->data.mglru.freq));
 		update_evicted_stat(lrugen, tier, 1);
@@ -515,7 +771,22 @@ void BPF_STRUCT_OPS(unified_evict_folios, struct cache_ext_eviction_ctx *evictio
 	if (!unified_initialized) return;
 	u32 policy = get_current_policy();
 
-	if (policy == POLICY_ID_S3FIFO) {
+	if (policy == POLICY_ID_LHD) {
+		struct sampling_options opts = {
+			.sample_size = 16,
+		};
+		bpf_cache_ext_list_sample(memcg, list_primary, (void*)bpf_lhd_score_fn, &opts, eviction_ctx);
+		
+		if (eviction_ctx->nr_folios_to_evict < eviction_ctx->request_nr_folios_to_evict) {
+			bpf_cache_ext_list_iterate(memcg, list_secondary, simple_evict_cb, eviction_ctx);
+		}
+		if (eviction_ctx->nr_folios_to_evict < eviction_ctx->request_nr_folios_to_evict) {
+			bpf_cache_ext_list_iterate(memcg, mglru_lists[2], simple_evict_cb, eviction_ctx);
+		}
+		if (eviction_ctx->nr_folios_to_evict < eviction_ctx->request_nr_folios_to_evict) {
+			bpf_cache_ext_list_iterate(memcg, mglru_lists[3], simple_evict_cb, eviction_ctx);
+		}
+	} else if (policy == POLICY_ID_S3FIFO) {
 		bool evict_small = (s3fifo_small_size >= cache_size / 10 || s3fifo_main_size <= 2 * s3fifo_small_size);
 		if (evict_small) {
 			struct cache_ext_iterate_opts opts = { .continue_list = list_secondary, .continue_mode = CACHE_EXT_ITERATE_TAIL, .evict_list = CACHE_EXT_ITERATE_SELF, .evict_mode = CACHE_EXT_ITERATE_TAIL };

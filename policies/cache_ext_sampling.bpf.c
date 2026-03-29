@@ -5,6 +5,7 @@
 
 #include "cache_ext_lib.bpf.h"
 #include "dir_watcher.bpf.h"
+#include "unified_metadata.bpf.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -32,17 +33,6 @@ char _license[] SEC("license") = "GPL";
  */
 
 #define MAX_PAGES (1 << 20)
-
-struct folio_metadata {
-	u64 accesses;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u64);
-	__type(value, struct folio_metadata);
-	__uint(max_entries, 4000000);
-} folio_metadata_map SEC(".maps");
 
 __u64 sampling_list;
 
@@ -87,23 +77,32 @@ inline void update_stat(char (*stat_name)[MAX_STAT_NAME_LEN], s64 delta) {
 inline bool is_folio_relevant(struct folio *folio)
 {
 	if (!folio) {
-		// bpf_printk("folio not relevant because it's null\n");
 		return false;
 	}
 	if (folio->mapping == NULL) {
-		// bpf_printk("folio not relevant because it's mapping is null\n");
 		return false;
 	}
 	if (folio->mapping->host == NULL) {
-		// bpf_printk("folio not relevant because it's host is null\n");
 		return false;
 	}
-	bool res = inode_in_watchlist(folio->mapping->host->i_ino);
-	// if (!res) {
-	// 	bpf_printk("folio not relevant because it's inode is not in watchlist, inode %llu\n",
-	// 		   folio->mapping->host->i_ino);
-
-	// }
+	u64 ino = folio->mapping->host->i_ino;
+	bool res = inode_in_watchlist(ino);
+	if (!res) {
+		// Rate limit printing to avoid flooding
+		static u64 last_print = 0;
+		u64 now = bpf_ktime_get_ns();
+		if (now - last_print > 1000000000ULL) { // 1 second
+			bpf_printk("folio not relevant: inode %llu not in watchlist\n", ino);
+			last_print = now;
+		}
+	} else {
+		static u64 last_print_rel = 0;
+		u64 now = bpf_ktime_get_ns();
+		if (now - last_print_rel > 1000000000ULL) { // 1 second
+			bpf_printk("folio RELEVANT: inode %llu IS in watchlist\n", ino);
+			last_print_rel = now;
+		}
+	}
 	return res;
 }
 
@@ -139,10 +138,25 @@ void BPF_STRUCT_OPS(sampling_folio_added, struct folio *folio)
 
 	update_stat(&STAT_TOTAL_PAGES, 1);
 
-	// Create folio metadata
-	u64 key = (u64)folio;
-	struct folio_metadata new_meta = { .accesses = 1 };
-	bpf_map_update_elem(&folio_metadata_map, &key, &new_meta, BPF_ANY);
+	// Check ghost for reaccess
+	struct ghost_metadata ghost;
+	bool from_ghost = unified_pop_ghost(folio, &ghost);
+
+	// Create unified metadata
+	if (unified_create_metadata(folio, POLICY_ID_SAMPLING, 0)) {
+		bpf_printk("cache_ext: Failed to create folio metadata\n");
+		return;
+	}
+
+	if (from_ghost) {
+		struct unified_folio_metadata *meta = unified_get_metadata(folio);
+		if (meta) {
+			meta->flags |= UNIFIED_FLAG_FROM_GHOST;
+		}
+		unified_stats_record_ghost_hit();
+	} else {
+		unified_stats_record_unique_page();
+	}
 }
 
 void BPF_STRUCT_OPS(sampling_folio_accessed, struct folio *folio)
@@ -150,40 +164,23 @@ void BPF_STRUCT_OPS(sampling_folio_accessed, struct folio *folio)
 	if (!is_folio_relevant(folio)) {
 		return;
 	}
-	// TODO: Update folio metadata with other values we want to track
-	struct folio_metadata *meta;
-	u64 key = (u64)folio;
-	meta = bpf_map_lookup_elem(&folio_metadata_map, &key);
-	if (!meta) {
-		struct folio_metadata new_meta = { 0 };
-		int ret = bpf_map_update_elem(&folio_metadata_map, &key,
-					      &new_meta, BPF_ANY);
-		if (ret != 0) {
-			bpf_printk(
-				"cache_ext: Failed to create folio metadata in accessed. Return value: %d\n",
-				ret);
-			return;
-		}
-		meta = bpf_map_lookup_elem(&folio_metadata_map, &key);
-		if (meta == NULL) {
-			bpf_printk("cache_ext: Failed to get created folio metadata in accessed\n");
-			return;
-		}
-	}
-	__sync_fetch_and_add(&meta->accesses, 1);
+
+	bool is_reaccess = unified_record_access(folio);
+	unified_stats_record_access(is_reaccess, unified_is_sequential(folio));
 }
 
 void BPF_STRUCT_OPS(sampling_folio_evicted, struct folio *folio)
 {
 	dbg_printk(
 		"cache_ext: Hi from the sampling_folio_evicted hook! :D\n");
-	// if (bpf_cache_ext_list_del(folio)) {
-	// 	dbg_printk("cache_ext: Failed to delete folio from sampling_list\n");
-	// 	return;
-	// }
 
-	u64 key = (u64)folio;
-	bpf_map_delete_elem(&folio_metadata_map, &key);
+	struct unified_folio_metadata *meta = unified_get_metadata(folio);
+	if (meta) {
+		unified_add_ghost(folio, POLICY_ID_SAMPLING, 0);
+		unified_stats_record_eviction();
+		unified_delete_metadata(folio);
+	}
+
 	update_stat(&STAT_TOTAL_PAGES, -1);
 	update_stat(&STAT_EVICTED_TOTAL_PAGES, 1);
 
@@ -214,14 +211,12 @@ static inline bool is_last_page_in_file(struct folio *folio)
 static s64 bpf_lfu_score_fn(struct cache_ext_list_node *a)
 {
 	s64 score = 0;
-	struct folio_metadata *meta_a;
-	u64 key_a = (u64)a->folio;
-	meta_a = bpf_map_lookup_elem(&folio_metadata_map, &key_a);
+	struct unified_folio_metadata *meta_a = unified_get_metadata(a->folio);
 	if (!meta_a) {
 		bpf_printk("cache_ext: Failed to get metadata\n");
 		return INT64_MAX;
 	}
-	score = meta_a->accesses;
+	score = meta_a->access_count;
 	if (APP_TYPE == LEVELDB) {
 		// In leveldb, the index block is at the end of the file.
 		bool is_last_page = is_last_page_in_file(a->folio);

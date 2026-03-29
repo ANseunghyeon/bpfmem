@@ -67,7 +67,7 @@ int initialize_watch_dir_map(const char *path, int watch_dir_map_fd, bool recurs
 
 		__u8 zero = 0;
 
-		// fprintf(stderr, "Adding inode %lu to watch_dir map\n", ent->d_ino);
+		// printf("Adding inode %lu to watch_dir map\n", (unsigned long)ent->d_ino);
 		ret = bpf_map_update_elem(watch_dir_map_fd, &ent->d_ino, &zero, 0);
 		if (ret) {
 			perror("Failed to update watch_dir map");

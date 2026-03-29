@@ -75,6 +75,11 @@ class CacheExtPolicy:
         out, err = self._policy_thread.communicate()
         with suppress(subprocess.CalledProcessError):
             run(["sudo", "rm", "/sys/fs/bpf/cache_ext/scan_pids"])
+            
+        # Clean up the cgroup specific maps after policy stops
+        cgroup_name = self.cgroup_path.split("/")[-1]
+        subprocess.run(["sudo", "rm", "-rf", f"/sys/fs/bpf/cache_ext/{cgroup_name}"], stderr=subprocess.DEVNULL)
+        
         log.info("Policy thread stdout: %s", out.decode("utf-8"))
         log.info("Policy thread stderr: %s", err.decode("utf-8"))
         self.has_started = False
@@ -225,6 +230,8 @@ def enable_cache_ext_for_cgroup(cgroup=DEFAULT_CACHE_EXT_CGROUP):
 def delete_cgroup(cgroup):
     with suppress(subprocess.CalledProcessError):
         run(["sudo", "cgdelete", f"memory:{cgroup}"])
+    # Also clean up any pinned BPF maps for this cgroup to prevent memory leaks
+    subprocess.run(["sudo", "rm", "-rf", f"/sys/fs/bpf/cache_ext/{cgroup}"], stderr=subprocess.DEVNULL)
 
 
 def recreate_cache_ext_cgroup(cgroup=DEFAULT_CACHE_EXT_CGROUP, limit_in_bytes=2 * GiB):
@@ -402,7 +409,7 @@ def read_lru_gen(target_cgroup: str = None) -> str:
     return "\n".join(filtered_output)
 
 
-def read_bpf_stats() -> Dict[str, int]:
+def read_bpf_stats(cgroup_name: str = "cache_ext_test") -> Dict[str, int]:
     stats = {
         "total_accesses": 0,
         "reaccesses": 0,
@@ -415,7 +422,8 @@ def read_bpf_stats() -> Dict[str, int]:
     }
     
     try:
-        cmd = ["sudo", "bpftool", "map", "dump", "name", "access_stats_map", "-j"]
+        map_path = f"/sys/fs/bpf/cache_ext/{cgroup_name}/access_stats_map"
+        cmd = ["sudo", "bpftool", "map", "dump", "pinned", map_path, "-j"]
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -435,9 +443,22 @@ def read_bpf_stats() -> Dict[str, int]:
         for entry in data:
             for cpu_val in entry.get("values", []):
                 val = cpu_val.get("value", {})
-                for k in stats.keys():
-                    if k in val:
-                        stats[k] += val[k]
+                if isinstance(val, dict):
+                    for k in stats.keys():
+                        if k in val:
+                            stats[k] += val[k]
+                elif isinstance(val, list) and len(val) == 64:
+                    # Fallback for when BTF is missing and bpftool outputs hex bytes
+                    import struct
+                    try:
+                        bytes_list = [int(x, 16) for x in val]
+                        byte_array = bytes(bytes_list)
+                        unpacked = struct.unpack('<8Q', byte_array)
+                        keys = list(stats.keys())
+                        for i, k in enumerate(keys):
+                            stats[k] += unpacked[i]
+                    except Exception as e:
+                        log.warning(f"Failed to parse hex bytes: {e}")
                     
     except Exception as e:
         log.warning(f"Failed to read BPF stats: {e}")
@@ -716,7 +737,7 @@ class BenchmarkFramework(ABC):
             
             # Start Metrics Collection
             start_cgroup_stat = read_cgroup_memory_stat(config["cgroup_name"])
-            start_bpf_stats = read_bpf_stats()
+            start_bpf_stats = read_bpf_stats(config.get("cgroup_name", "cache_ext_test"))
             
             try:
                 if self.second_command:
@@ -746,7 +767,7 @@ class BenchmarkFramework(ABC):
             # End Metrics Collection
             end_cgroup_stat = read_cgroup_memory_stat(config["cgroup_name"])
             end_lru_gen = read_lru_gen(config.get("cgroup_name"))
-            end_bpf_stats = read_bpf_stats()
+            end_bpf_stats = read_bpf_stats(config.get("cgroup_name", "cache_ext_test"))
 
             self.after_benchmark(config)
             # Save results
@@ -783,11 +804,11 @@ class BenchmarkFramework(ABC):
                         metrics[f"bpf_{k}"] = diff
                 
                 # Calculate accurate hit ratio from BPF stats
-                # Hit Ratio = reaccesses / total_accesses
-                if "total_accesses" in bpf_diff and bpf_diff["total_accesses"] > 0:
-                    metrics["cache_ext_hit_ratio"] = bpf_diff["reaccesses"] / bpf_diff["total_accesses"]
-                    # Ghost Hit Ratio = ghost_hits / total_accesses
-                    metrics["cache_ext_ghost_hit_ratio"] = bpf_diff["ghost_hits"] / bpf_diff["total_accesses"]
+                # Total Requests = Hits (total_accesses) + Misses (unique_pages + ghost_hits)
+                total_requests = bpf_diff.get("total_accesses", 0) + bpf_diff.get("unique_pages", 0) + bpf_diff.get("ghost_hits", 0)
+                if total_requests > 0:
+                    metrics["cache_ext_hit_ratio"] = bpf_diff.get("total_accesses", 0) / total_requests
+                    metrics["cache_ext_ghost_hit_ratio"] = bpf_diff.get("ghost_hits", 0) / total_requests
 
             # Derived Hit Ratio (Page Fault based)
             if "cgroup_stat_diff_pgfault" in metrics and "cgroup_stat_diff_pgmajfault" in metrics:
